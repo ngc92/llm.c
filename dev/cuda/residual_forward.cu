@@ -88,8 +88,8 @@ void residual_forward(int kernel_num,
 
 // ----------------------------------------------------------------------------
 
-int main(int argc, char **argv) {
-    setup_main();
+int main(int argc, const char **argv) {
+    int kernel_num = setup_main(argc, argv);
 
     int B = 8;
     int T = 1024;
@@ -110,13 +110,6 @@ int main(int argc, char **argv) {
     cudaCheck(memcpy_convert(d_inp1, inp1, B * T * C));
     cudaCheck(memcpy_convert(d_inp2, inp2, B * T * C));
 
-    // read kernel_num from command line
-    int kernel_num = 1;
-    if (argc > 1) {
-        kernel_num = atoi(argv[1]);
-    }
-    printf("Using kernel %d\n", kernel_num);
-
     // first check the correctness of the kernel
     residual_forward_cpu(out, inp1, inp2, B * T * C);
 
@@ -128,11 +121,7 @@ int main(int argc, char **argv) {
         int block_size = block_sizes[j];
         printf("Checking block size %d.\n", block_size);
         residual_forward(kernel_num, d_out, d_inp1, d_inp2, B * T * C, block_size);
-#if !defined(ENABLE_BF16) && !defined(ENABLE_FP16)
-        float tol = 1e-5;
-#else
-        float tol = 1e-2f;
-#endif
+        float tol = std::is_same_v<floatX, float> ? 1e-5 : 1e-2;
         validate_result(d_out, out, "out", B * T * C, tol);
     }
 
@@ -147,12 +136,14 @@ int main(int argc, char **argv) {
                                               );
 
         // napkin math: estimate the memory bandwidth achieved
-        // for each (B,T,C) output element, we do 2 read and 1 write, 4 bytes each
+        // for each (B,T,C) output element, we do 2 read and 1 write
         // and e.g. A100 40GB PCIe is advertised at 1,555GB/s
-        long memory_ops = B * T * C * 3 * 4;
+        long memory_ops = B * T * C * 3 * sizeof(floatX);
         float memory_bandwidth = memory_ops / elapsed_time / 1e6;
+        float toks_per_msec = B * T / elapsed_time / 1e3;
 
-        printf("block_size %4d | time %.4f ms | bandwidth %.2f GB/s\n", block_size, elapsed_time, memory_bandwidth);
+        printf("block_size %4d | time %.4f ms | bandwidth %.2f GB/s | elements: %.2f ktok/ms\n",
+               block_size, elapsed_time, memory_bandwidth, toks_per_msec);
     }
 
     // free memory

@@ -144,8 +144,8 @@ void adamw(int kernel_num,
 
 // ----------------------------------------------------------------------------
 
-int main(int argc, char **argv) {
-    setup_main();
+int main(int argc, const char **argv) {
+    int kernel_num = setup_main(argc, argv);
 
     const long num_parameters = 1048576;
     const int t = 10;
@@ -175,14 +175,6 @@ int main(int argc, char **argv) {
     cudaCheck(cudaMemcpy(d_grads_memory, grads_memory, num_parameters * sizeof(float), cudaMemcpyHostToDevice));
     cudaCheck(cudaMemcpy(d_m_memory, m_memory, num_parameters * sizeof(float), cudaMemcpyHostToDevice));
     cudaCheck(cudaMemcpy(d_v_memory, v_memory, num_parameters * sizeof(float), cudaMemcpyHostToDevice));
-
-
-    // read kernel_num from command line
-    int kernel_num = 1;
-    if (argc > 1) {
-        kernel_num = atoi(argv[1]);
-    }
-    printf("Using kernel %d\n", kernel_num);
 
     // calculate the CPU reference (using default hyperparams)
     clock_t start = clock();

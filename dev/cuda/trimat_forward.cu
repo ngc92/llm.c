@@ -530,8 +530,8 @@ void trimul_gpu(int kernel_num,
 
 
 
-int main(int argc, char **argv) {
-    setup_main();
+int main(int argc, const char **argv) {
+    int kernel_num = setup_main(argc, argv);
 
     int B = 8;
     int T = 1024;
@@ -551,13 +551,6 @@ int main(int argc, char **argv) {
 
     // buffer for cublas
     cudaCheck(cudaMalloc(&d_qkvr, B * T * 3 * C * sizeof(float)));
-
-    // read kernel_num from command line
-    int kernel_num = 1;
-    if (argc > 1) {
-        kernel_num = atoi(argv[1]);
-    }
-    printf("Using kernel %d\n", kernel_num);
 
     // first check the correctness of the kernel
     trimul_cpu(out, inp, B, T, C, NH);

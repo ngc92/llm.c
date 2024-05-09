@@ -242,32 +242,13 @@ void matmul_forward(int kernel_num,
 
 // ----------------------------------------------------------------------------
 
-int main(int argc, char **argv) {
-    srand(0);
+int main(int argc, const char **argv) {
+    int kernel_num = setup_main(argc, argv);
 
     int B = 8;
     int T = 1024;
     int C = 768;
     int OC = 768 * 4; // expansion of 4, e.g. in the MLP
-
-    // set up the device
-    int deviceIdx = 0;
-    cudaCheck(cudaSetDevice(deviceIdx));
-    cudaDeviceProp deviceProp;
-    cudaGetDeviceProperties(&deviceProp, deviceIdx);
-    printf("Device %d: %s\n", deviceIdx, deviceProp.name);
-
-    // setup cuBLAS and cuBLASLt
-    cublasCheck(cublasCreate(&cublas_handle));
-    cublasCheck(cublasLtCreate(&cublaslt_handle));
-    // TF32 precision is equivalent to torch.set_float32_matmul_precision('high')
-    int enable_tf32 = deviceProp.major >= 8 ? 1 : 0;
-    printf("enable_tf32: %d\n", enable_tf32);
-    cublas_compute_type = enable_tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
-    cublasMath_t cublas_math_mode = enable_tf32 ? CUBLAS_TF32_TENSOR_OP_MATH : CUBLAS_DEFAULT_MATH;
-    cublasCheck(cublasSetMathMode(cublas_handle, cublas_math_mode));
-    // setup the (global) cuBLASLt workspace
-    cudaCheck(cudaMalloc(&cublaslt_workspace, cublaslt_workspace_size));
 
     // create host memory of random numbers
     float* out = (float*)malloc(B * T * OC * sizeof(float));
@@ -287,13 +268,6 @@ int main(int argc, char **argv) {
     cudaCheck(cudaMemcpy(d_inp, inp, B * T * C * sizeof(float), cudaMemcpyHostToDevice));
     cudaCheck(cudaMemcpy(d_weight, weight, C * OC * sizeof(float), cudaMemcpyHostToDevice));
     cudaCheck(cudaMemcpy(d_bias, bias, OC * sizeof(float), cudaMemcpyHostToDevice));
-
-    // read kernel_num from command line
-    int kernel_num = 1;
-    if (argc > 1) {
-        kernel_num = atoi(argv[1]);
-    }
-    printf("Using kernel %d\n", kernel_num);
 
     // first check the correctness of the kernel
     matmul_forward_cpu(out, inp, weight, bias, B, T, C, OC);

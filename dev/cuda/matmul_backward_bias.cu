@@ -252,20 +252,13 @@ void matmul_backward_bias(int kernel_num,
 
 // ----------------------------------------------------------------------------
 
-int main(int argc, char **argv) {
-    setup_main();
+int main(int argc, const char **argv) {
+    int kernel_num = setup_main(argc, argv);
 
     int B = 8;
     int T = 1024;
     int C = 768;
     int OC = 768 * 4; // expansion of 4, e.g. in the MLP
-
-    // read kernel_num from command line
-    int kernel_num = 1;
-    if (argc > 1) {
-        kernel_num = atoi(argv[1]);
-    }
-    printf("Using kernel %d\n", kernel_num);
 
     // create host memory of random numbers
     float* dbias = make_zeros_float(OC);

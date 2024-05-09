@@ -219,7 +219,7 @@ template<class TargetType>
     return status;
 }
 
-void setup_main() {
+int setup_main(int argc, const char** argv) {
     srand(0);   // determinism
 
     // set up the device
@@ -244,6 +244,14 @@ void setup_main() {
     cublas_compute_type = enable_tf32 ? CUBLAS_COMPUTE_32F_FAST_TF32 : CUBLAS_COMPUTE_32F;
     cublasMath_t cublas_math_mode = enable_tf32 ? CUBLAS_TF32_TENSOR_OP_MATH : CUBLAS_DEFAULT_MATH;
     cublasCheck(cublasSetMathMode(cublas_handle, cublas_math_mode));
+
+    // read kernel_num from command line
+    int kernel_num = 1;
+    if (argc > 1) {
+        kernel_num = atoi(argv[1]);
+    }
+    printf("Using kernel %d\n", kernel_num);
+    return kernel_num;
 }
 
 template<class D, class T>

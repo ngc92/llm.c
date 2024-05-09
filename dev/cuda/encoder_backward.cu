@@ -127,16 +127,13 @@ void encoder_backward(int kernel_num,
 
 // ----------------------------------------------------------------------------
 
-int main(int argc, char **argv) {
-    srand(0);
+int main(int argc, const char **argv) {
+    int kernel_num = setup_main(argc, argv);
 
     int B = 8;
     int T = 1024;
     int C = 768;
     int V = 50257;
-
-    int deviceIdx = 0;
-    cudaCheck(cudaSetDevice(deviceIdx));
 
     // create host memory of random numbers
     float* dout = make_random_float(B * T * C);
@@ -155,13 +152,6 @@ int main(int argc, char **argv) {
     cudaCheck(cudaMalloc(&d_dwpe, T * C * sizeof(float)));
     cudaCheck(cudaMemcpy(d_dout, dout, B * T * C * sizeof(float), cudaMemcpyHostToDevice));
     cudaCheck(cudaMemcpy(d_inp, inp, B * T * sizeof(int), cudaMemcpyHostToDevice));
-
-    // read kernel_num from command line
-    int kernel_num = 1;
-    if (argc > 1) {
-        kernel_num = atoi(argv[1]);
-    }
-    printf("Using kernel %d\n", kernel_num);
 
     // set up block sizes
     int block_sizes[] = {32, 64, 128, 256, 512, 1024};

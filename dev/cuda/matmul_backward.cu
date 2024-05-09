@@ -177,27 +177,13 @@ void matmul_backward(int kernel_num,
 
 // ----------------------------------------------------------------------------
 
-int main(int argc, char **argv) {
-    srand(0);
+int main(int argc, const char **argv) {
+    int kernel_num = setup_main(argc, argv);
 
     int B = 8;
     int T = 1024;
     int C = 768;
     int OC = 768 * 4; // expansion of 4, e.g. in the MLP
-
-    // set up the device
-    int deviceIdx = 0;
-    cudaCheck(cudaSetDevice(deviceIdx));
-    cudaDeviceProp deviceProp;
-    cudaGetDeviceProperties(&deviceProp, deviceIdx);
-    printf("Device %d: %s\n", deviceIdx, deviceProp.name);
-
-    // setup cuBLAS and its mathmodes, ensure fp32
-    int enable_tf32 = 0; // use fp32 to get accurate results for checking w.r.t. CPU
-    cublasCheck(cublasCreate(&cublas_handle));
-    printf("enable_tf32: %d\n", enable_tf32);
-    cublasMath_t cublas_math_mode = enable_tf32 ? CUBLAS_TF32_TENSOR_OP_MATH : CUBLAS_DEFAULT_MATH;
-    cublasCheck(cublasSetMathMode(cublas_handle, cublas_math_mode));
 
     // create host memory of random numbers
     float* dinp = make_zeros_float(B * T * C);
@@ -230,13 +216,6 @@ int main(int argc, char **argv) {
     cudaCheck(cudaMemcpy(d_inp, inp, B * T * C * sizeof(float), cudaMemcpyHostToDevice));
     cudaCheck(cudaMemcpy(d_weight, weight, OC * C * sizeof(float), cudaMemcpyHostToDevice));
     cudaCheck(cudaMemcpy(d_ones, ones, OC * sizeof(float), cudaMemcpyHostToDevice));
-
-    // read kernel_num from command line
-    int kernel_num = 1;
-    if (argc > 1) {
-        kernel_num = atoi(argv[1]);
-    }
-    printf("Using kernel %d\n", kernel_num);
 
     // calculate the CPU reference
     matmul_backward_cpu(dinp, dweight, dbias, dout, inp, weight, B, T, C, OC);

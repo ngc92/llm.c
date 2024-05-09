@@ -978,21 +978,14 @@ void attention_backward(int kernel_num,
 
 // ----------------------------------------------------------------------------
 
-int main(int argc, char **argv) {
-    setup_main();
+int main(int argc, const char **argv) {
+    int kernel_num = setup_main(argc, argv);
 
     // hyperparameters
     int B = 4;
     int T = 1024;
     int C = 768;
     int NH = 12;
-
-    // read kernel_num from command line
-    int kernel_num = 1;
-    if (argc > 1) {
-        kernel_num = atoi(argv[1]);
-    }
-    printf("Using kernel %d\n", kernel_num);
 
     // create the host memory for the forward pass
     float* inp = make_random_float(B * T * 3 * C);

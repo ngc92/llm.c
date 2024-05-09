@@ -74,7 +74,6 @@ static cudnnHandle_t cudnn_handle;
 static size_t cudnn_workspace_size = 0; // dynamically allocated as needed (up to 256MiB!)
 static void* cudnn_workspace = NULL;
 
-#define checkCudaErr(err) assert((int)err == 0);
 #define checkCudnnErr(err) assert((int)err == 0);
 #endif // ENABLE_CUDNN
 // ----------------------------------------------------------------------------
@@ -1278,25 +1277,13 @@ void attention_forward(int kernel_num,
 }
 // ----------------------------------------------------------------------------
 
-int main(int argc, char **argv) {
-    setup_main();
+int main(int argc, const char **argv) {
+    int kernel_num = setup_main(argc, argv);
 
     int B = 8;
     int T = 1024;
     int C = 768;
     int NH = 12;
-
-    int deviceIdx = 0;
-    cudaCheck(cudaSetDevice(deviceIdx));
-    cudaDeviceProp deviceProp;
-    cudaGetDeviceProperties(&deviceProp, deviceIdx);
-
-    // setup cuBLAS (and cuDNN if needed)
-    cublasCreate(&cublas_handle);
-    int enable_tf32 = deviceProp.major >= 8 ? 1 : 0;
-    printf("enable_tf32: %d\n", enable_tf32);
-    cublasMath_t cublas_math_mode = enable_tf32 ? CUBLAS_TF32_TENSOR_OP_MATH : CUBLAS_DEFAULT_MATH;
-    cublasCheck(cublasSetMathMode(cublas_handle, cublas_math_mode));
 
     #ifdef ENABLE_CUDNN
     checkCudnnErr(cudnnCreate(&cudnn_handle));
@@ -1326,12 +1313,6 @@ int main(int argc, char **argv) {
     cudaCheck(cudaMalloc(&d_inp, B * T * 3 * C * sizeof(float)));
     cudaCheck(cudaMemcpy(d_inp, inp, B * T * 3 * C * sizeof(float), cudaMemcpyHostToDevice));
 
-    // read kernel_num from command line
-    int kernel_num = 1;
-    if (argc > 1) {
-        kernel_num = atoi(argv[1]);
-    }
-    printf("Using kernel %d\n", kernel_num);
     int block_sizes[] = {32, 64, 128, 256, 512};
 
     // Lower accuracy requirements for FP16 (1e-4f also too much for TF32 on kernels 3 & 4)

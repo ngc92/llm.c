@@ -79,15 +79,12 @@ void crossentropy_forward(int kernel_num,
 
 // ----------------------------------------------------------------------------
 
-int main(int argc, char **argv) {
-    srand(0);
+int main(int argc, const char **argv) {
+    int kernel_num = setup_main(argc, argv);
 
     int B = 8;
     int T = 1024;
     int V = 50257;
-
-    int deviceIdx = 0;
-    cudaCheck(cudaSetDevice(deviceIdx));
 
     // create host memory of random numbers
     float* out = (float*)malloc(B * T * sizeof(float));
@@ -103,13 +100,6 @@ int main(int argc, char **argv) {
     cudaCheck(cudaMalloc(&d_targets, B * T * sizeof(int)));
     cudaCheck(cudaMemcpy(d_probs, probs, B * T * V * sizeof(float), cudaMemcpyHostToDevice));
     cudaCheck(cudaMemcpy(d_targets, targets, B * T * sizeof(int), cudaMemcpyHostToDevice));
-
-    // read kernel_num from command line
-    int kernel_num = 1;
-    if (argc > 1) {
-        kernel_num = atoi(argv[1]);
-    }
-    printf("Using kernel %d\n", kernel_num);
 
     // first check the correctness of the kernel
     crossentropy_forward_cpu(out, probs, targets, B, T, V);

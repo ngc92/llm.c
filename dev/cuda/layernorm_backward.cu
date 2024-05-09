@@ -996,8 +996,8 @@ void layernorm_backward(int kernel_num,
 
 // ----------------------------------------------------------------------------
 
-int main(int argc, char **argv) {
-    setup_main();
+int main(int argc, const char **argv) {
+    int kernel_num = setup_main(argc, argv);
 
     int B = 8;
     int T = 1024;
@@ -1040,13 +1040,6 @@ int main(int argc, char **argv) {
 
     // the above calculations act as the reference
     // now let's do the same on the GPU
-
-    // read kernel_num from command line
-    int kernel_num = 2;
-    if (argc > 1) {
-        kernel_num = atoi(argv[1]);
-    }
-    printf("Using kernel %d\n", kernel_num);
 
     // move all the variables we need for backward pass onto the GPU
     floatX* d_dinp;

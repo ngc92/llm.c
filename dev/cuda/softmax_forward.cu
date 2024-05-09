@@ -592,15 +592,12 @@ void softmax_forward(int kernel_num, float* out, const float* inp, int N, int C,
 
 // ----------------------------------------------------------------------------
 
-int main(int argc, char **argv) {
-    srand(0);
+int main(int argc, const char **argv) {
+    int kernel_num = setup_main(argc, argv);
 
     int B = 8;
     int T = 1024;
     int V = 50257;
-
-    int deviceIdx = 0;
-    cudaCheck(cudaSetDevice(deviceIdx));
 
     // create host memory of random numbers
     float* out = (float*)malloc(B * T * V * sizeof(float));
@@ -622,13 +619,6 @@ int main(int argc, char **argv) {
     cudaCheck(cudaMalloc(&d_out, B * T * V * sizeof(float)));
     cudaCheck(cudaMalloc(&d_inp, B * T * V * sizeof(float)));
     cudaCheck(cudaMemcpy(d_inp, inp, B * T * V * sizeof(float), cudaMemcpyHostToDevice));
-
-    // read kernel_num from command line
-    int kernel_num = 1;
-    if (argc > 1) {
-        kernel_num = atoi(argv[1]);
-    }
-    printf("Using kernel %d\n", kernel_num);
 
     int block_sizes[] = {32, 64, 128, 256, 512, 1024};
 
