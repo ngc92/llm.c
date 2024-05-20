@@ -176,6 +176,15 @@ jobs:
       - name: Build project
         run: PRECISION=FP16 make test_gpt2cu train_gpt2cu profile_gpt2cu
 
+  dummy-test:
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.4.1-devel-ubuntu22.04
+
+    steps:
+      - name: NVCC version
+        run: nvcc --version
+
   build-cuda-kernels:
     runs-on: ubuntu-latest
     container:
