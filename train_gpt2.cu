@@ -236,31 +236,6 @@ typedef struct {
     floatX* scratch_btc;    // (B, T, C)
 } ActivationTensors;
 
-// enumerator to indentify the datatype of a tensor.
-enum class DType : uint8_t {
-    FP32, FP16, BF16
-};
-
-// Given a datatype enum, returns the underlying number of bytes
-// for a scalar of that type
-size_t sizeof_dtype(DType type) {
-    switch (type) {
-        case DType::FP32:
-            return sizeof(float);
-        case DType::FP16:
-            return sizeof(half);
-        case DType::BF16:
-            return sizeof(nv_bfloat16);
-        default: // handle or get compiler warning
-            fprintf(stderr, "Unknown datatype\n");
-            exit(EXIT_FAILURE);
-    }
-}
-
-DType dtype_of(float* f) { return DType::FP32; }
-DType dtype_of(nv_bfloat16 * f) { return DType::BF16; }
-DType dtype_of(half * f) { return DType::FP16; }
-
 struct TensorSpec {
     void** ptr;
     size_t size;
@@ -349,7 +324,9 @@ typedef struct {
     ParameterTensors grads;
     void* grads_memory;
     // buffers for the AdamW optimizer
-    float* m_memory;
+    void* m_memory;
+    DType m_type;
+    float* m_scales;
     float* v_memory;
     float* master_weights;     // is NULL unless fp32 weights is enabled.
     // the activations of the model, and their sizes
@@ -1028,9 +1005,11 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
         NvtxRange rng("InitOpt");
         printf0("allocating %zu MiB for AdamW optimizer state m\n", (shard_num_parameters * sizeof(float)) >> 20);
         printf0("allocating %zu MiB for AdamW optimizer state v\n", (shard_num_parameters * sizeof(float)) >> 20);
-        cudaCheck(cudaMalloc((void**)&model->m_memory, shard_num_parameters * sizeof(float)));
+        cudaCheck(cudaMalloc(&model->m_memory, shard_num_parameters * sizeof_dtype(model->m_type)));
+        cudaCheck(cudaMalloc((void**)&model->m_scales, shard_num_parameters * sizeof(float) / WARP_SIZE));
         cudaCheck(cudaMalloc((void**)&model->v_memory, shard_num_parameters * sizeof(float)));
-        cudaCheck(cudaMemset(model->m_memory, 0, shard_num_parameters * sizeof(float)));
+        cudaCheck(cudaMemset(model->m_memory, 0, shard_num_parameters * sizeof_dtype(model->m_type)));
+        cudaCheck(cudaMemset(model->m_scales, 0, shard_num_parameters * sizeof(float) / WARP_SIZE));
         cudaCheck(cudaMemset(model->v_memory, 0, shard_num_parameters * sizeof(float)));
     }
 
@@ -1066,7 +1045,8 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
         floatX* grad_ptr = (floatX*)model->grads_memory + local_offset_full;
 
         ptrdiff_t opt_state_offset = multi_gpu_config->zero_stage < 1 ?  local_offset_full : local_offset_partial;
-        float* m_ptr = model->m_memory + opt_state_offset;
+        void* m_ptr = (char*)model->m_memory + opt_state_offset * sizeof_dtype(model->m_type);
+        float* ms_ptr = model->m_scales + opt_state_offset / WARP_SIZE;
         float* v_ptr = model->v_memory + opt_state_offset;
         float* master_ptr = NULL;
         if (model->master_weights != NULL) { master_ptr = model->master_weights + opt_state_offset; }
@@ -1079,7 +1059,7 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
 
         // ok finally call the kernel
         adamw_update(param_ptr, master_ptr, grad_ptr,
-                     m_ptr, v_ptr,
+                     m_ptr, ms_ptr, model->m_type, v_ptr,
                      shard.size, tensor.size, tensor.size, shard.size, num_layers,
                      learning_rate,
                      beta1, beta2, t, eps, wd, grad_scale, seed, main_stream);
@@ -1426,6 +1406,7 @@ int main(int argc, char *argv[]) {
     int use_master_weights = 1;
     int gelu_fusion = -1; // 0 = none, 1 = forward, 2 = forward+backward (-1 => per-GPU default)
     int recompute = 1; // recompute during backward setting, 0 = none, 1 = recompute gelu
+    DType m_type = DType::FP32;
     int zero_stage = 0; // Zero Optimization Stage for Multi-GPU training
     int hellaswag_eval = 0;
     // multi-node settings
@@ -1443,7 +1424,7 @@ int main(int argc, char *argv[]) {
         if (argv[i][1] == 'i') { train_data_pattern = argv[i+1]; }
         else if (argv[i][1] == 'j') { val_data_pattern = argv[i+1]; }
         else if (argv[i][1] == 'e') { load_filename = argv[i+1]; }
-        else if (argv[i][1] == 'o') { output_log_dir = argv[i+1]; }
+        else if (argv[i][1] == 'o' && argv[i][2] == '\0') { output_log_dir = argv[i+1]; }
         else if (argv[i][1] == 'n' && argv[i][2] == '\0') { checkpoint_every = atoi(argv[i+1]); }
         else if (argv[i][1] == 'y') { resume = atoi(argv[i+1]); }
         else if (argv[i][1] == 'b') { B = atoi(argv[i+1]); } // Per-GPU (micro) batch size
@@ -1476,6 +1457,7 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 's' && argv[i][2] == 'g') { skip_update_gradz = atof(argv[i+1]); }
         else if (argv[i][1] == 'n' && argv[i][2] == 'k') { checkpoints_keep = atoi(argv[i+1]); }
         else if (argv[i][1] == 'n' && argv[i][2] == 'm') { major_checkpoint_every = atoi(argv[i+1]); }
+        else if (argv[i][1] == 'o' && argv[i][2] == 'm') { m_type = atoi(argv[i+1]) == 1 ? DType::FP16 : DType::FP32; }
         else { error_usage(); }
     }
 
@@ -1523,6 +1505,7 @@ int main(int argc, char *argv[]) {
     printf0("| genT                  | %-50d |\n", genT);
     printf0("| overfit_single_batch  | %-50d |\n", overfit_single_batch);
     printf0("| use_master_weights    | %-50s |\n", use_master_weights ? "enabled" : "disabled");
+    printf0("| momentum dtype        | %-50s |\n", m_type == DType::FP32 ? "fp32" : "fp16");
     printf0("| gelu_fusion           | %-50d |\n", gelu_fusion);
     printf0("| recompute             | %-50d |\n", recompute);
     printf0("+-----------------------+----------------------------------------------------+\n");
@@ -1570,6 +1553,7 @@ int main(int argc, char *argv[]) {
     model.use_master_weights = use_master_weights;
     model.gelu_fusion = gelu_fusion;
     model.recompute = recompute;
+    model.m_type = m_type;
     printf0("| weight init method    | %-50s |\n", resuming == 1 ? "intermediate checkpoint" : (load_filename[0] == 'd' ? "random" : "OpenAI's GPT-2 checkpoint"));
     printf0("| max_sequence_length T | %-50d |\n", model.config.max_seq_len);
     printf0("| vocab_size V          | %-50d |\n", model.config.vocab_size);
