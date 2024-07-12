@@ -1028,8 +1028,11 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
         NvtxRange rng("InitOpt");
         printf0("allocating %zu MiB for AdamW optimizer state m\n", (shard_num_parameters * sizeof(float)) >> 20);
         printf0("allocating %zu MiB for AdamW optimizer state v\n", (shard_num_parameters * sizeof(float)) >> 20);
-        cudaCheck(cudaMalloc((void**)&model->m_memory, shard_num_parameters * sizeof(float)));
-        cudaCheck(cudaMalloc((void**)&model->v_memory, shard_num_parameters * sizeof(float)));
+        // allocate using unified memory. This gives the GPU the opportunity to migrate these buffers to
+        // host memory in case of OOM. How bad is this? PCIe4x16 has 32GB/s bandwidth, for 1.5B model we have
+        // ~12 GB of optimizer state, so less than 1s of additional time per step.
+        cudaCheck(cudaMallocManaged((void**)&model->m_memory, shard_num_parameters * sizeof(float)));
+        cudaCheck(cudaMallocManaged((void**)&model->v_memory, shard_num_parameters * sizeof(float)));
         cudaCheck(cudaMemset(model->m_memory, 0, shard_num_parameters * sizeof(float)));
         cudaCheck(cudaMemset(model->v_memory, 0, shard_num_parameters * sizeof(float)));
     }
@@ -1246,11 +1249,11 @@ void load_state(int* step, GPT2* model, DataLoader* loader, const char* filename
     size_t shard_num_parameters = multi_gpu_config.shard_num_parameters;
     if (model->m_memory == NULL) {
         printf0("allocating %zu MiB for AdamW optimizer state m\n", (shard_num_parameters * sizeof(float)) >> 20);
-        cudaCheck(cudaMalloc((void**)&model->m_memory, shard_num_parameters * sizeof(float)));
+        cudaCheck(cudaMallocManaged((void**)&model->m_memory, shard_num_parameters * sizeof(float)));
     }
     if (model->v_memory == NULL) {
         printf0("allocating %zu MiB for AdamW optimizer state v\n", (shard_num_parameters * sizeof(float)) >> 20);
-        cudaCheck(cudaMalloc((void**)&model->v_memory, shard_num_parameters * sizeof(float)));
+        cudaCheck(cudaMallocManaged((void**)&model->v_memory, shard_num_parameters * sizeof(float)));
     }
     if(use_master_weights == 1 && !model->use_master_weights) {
         printf0("Warning: Master weights are present in state, but not enabled for current run.");
