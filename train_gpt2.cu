@@ -1040,7 +1040,7 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
     bool init_master_weights = false;
     if (model->use_master_weights == 1 && model->master_weights == NULL) {
         printf0("allocating %zu MiB for master copy of params\n", (shard_num_parameters * sizeof(float)) >> 20);
-        cudaCheck(cudaMalloc((void**)&model->master_weights, shard_num_parameters * sizeof(float)));
+        cudaCheck(cudaMallocManaged((void**)&model->master_weights, shard_num_parameters * sizeof(float)));
         init_master_weights = true;
     }
 
@@ -1263,7 +1263,7 @@ void load_state(int* step, GPT2* model, DataLoader* loader, const char* filename
     }
     if (model->master_weights == NULL && use_master_weights == 1) {
         printf0("allocating %zu MiB for master copy of params\n", (shard_num_parameters * sizeof(float)) >> 20);
-        cudaCheck(cudaMalloc((void**)&model->master_weights, shard_num_parameters * sizeof(float)));
+        cudaCheck(cudaMallocManaged((void**)&model->master_weights, shard_num_parameters * sizeof(float)));
     }
     file_to_device(model->m_memory, state_file, shard_num_parameters * sizeof(float), IO_BUF_SIZE, main_stream);
     file_to_device(model->v_memory, state_file, shard_num_parameters * sizeof(float), IO_BUF_SIZE, main_stream);
@@ -1533,6 +1533,13 @@ int main(int argc, char *argv[]) {
                               ? (cublas_compute == CUBLAS_COMPUTE_32F_FAST_TF32 ? "TF32" : "FP32")
                               : (PRECISION_MODE == PRECISION_FP16 ? "FP16" : "BF16");
     printf0("| device                | %-50s |\n", deviceProp.name);
+    {
+        char buffer[50];
+        size_t free, total;
+        cudaCheck(cudaMemGetInfo(&free, &total));
+        snprintf(buffer, sizeof(buffer), "%zd MiB / %zd MiB", free / 1024 / 1024, total / 1024 / 1024);
+        printf0("| free memory           | %-50s |\n", buffer);
+    }
     printf0("| peak TFlops           | %-50.1f |\n", get_flops_promised(deviceProp.name, PRECISION_MODE));
     printf0("| precision             | %-50s |\n", precision_str);
     printf0("+-----------------------+----------------------------------------------------+\n");
