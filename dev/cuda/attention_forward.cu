@@ -82,7 +82,7 @@ static void* cudnn_workspace = NULL;
 
 void attention_forward_cpu(float* out, float* preatt, float* att,
                        const float* inp,
-                       int B, int T, int C, int NH) {
+                       int B, int T, int C, int NH, int window) {
     // input is (B, T, 3C) Q,K,V
     // preatt, att are (B, NH, T, T)
     // output is (B, T, C)
@@ -99,7 +99,12 @@ void attention_forward_cpu(float* out, float* preatt, float* att,
 
                 // pass 1: calculate query dot key and maxval
                 float maxval = -FLT_MAX;
-                for (int t2 = 0; t2 <= t; t2++) {
+                for (int t2 = 0; t2 < T; t2++) {
+                    // pad with -INFINITY outside of autoregressive region for debugging comparisons
+                    if(t2 > t || (window > 0 && t2 < t - window)) {
+                        preatt_bth[t2] = -INFINITY;
+                        continue;
+                    }
                     const float* key_t2 = inp + b * T * C3 + t2 * C3 + h * hs + C; // +C because it's key
 
                     // (query_t) dot (key_t2)
@@ -113,10 +118,6 @@ void attention_forward_cpu(float* out, float* preatt, float* att,
                     }
 
                     preatt_bth[t2] = val;
-                }
-                // pad with -INFINITY outside of autoregressive region for debugging comparisons
-                for (int t2 = t+1; t2 < T; t2++) {
-                    preatt_bth[t2] = -INFINITY;
                 }
 
                 // pass 2: calculate the exp and keep track of sum
@@ -158,14 +159,14 @@ void attention_forward_cpu(float* out, float* preatt, float* att,
 // GPU kernels
 
 __global__ void attention_query_key_kernel1(float* preatt, const float* inp,
-                                           int B, int T, int C, int NH) {
+                                           int B, int T, int C, int NH, int window) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int total_threads = B * NH * T * T;
 
     if (idx < total_threads) {
         int t2 = idx % T;
         int t = (idx / T) % T;
-        if (t2 > t) {
+        if(t2 > t || (window > 0 && t2 < t - window)) {
             // autoregressive mask
             preatt[idx] = -INFINITY;
             return;
@@ -683,12 +684,12 @@ __global__ void attention_forward_fused1(float* out, float* preatt, float* att,
 
 void attention_forward1(float* out, float* preatt, float* att,
                        const float* inp,
-                       int B, int T, int C, int NH,
+                       int B, int T, int C, int NH, int window,
                        const int block_size) {
     // attention calculation
     int total_threads = B * NH * T * T;
     int num_blocks = ceil_div(total_threads, block_size);
-    attention_query_key_kernel1<<<num_blocks, block_size>>>(preatt, inp, B, T, C, NH);
+    attention_query_key_kernel1<<<num_blocks, block_size>>>(preatt, inp, B, T, C, NH, window);
     // softmax and value accumulation
     total_threads = B * T * NH;
     num_blocks = ceil_div(total_threads, block_size);
@@ -1230,11 +1231,11 @@ void attention_forward(int kernel_num,
                        float* out, float* stats, float* vaccum,
                        float* qkvr, float* preatt, float* att,
                        float* inp,
-                       int B, int T, int C, int NH,
+                       int B, int T, int C, int NH, int window,
                        const int block_size) {
     switch (kernel_num) {
         case 1:
-            attention_forward1(out, preatt, att, inp, B, T, C, NH, block_size);
+            attention_forward1(out, preatt, att, inp, B, T, C, NH, window, block_size);
             break;
         case 2:
             attention_forward2(out, inp, B, T, C, NH, block_size);
@@ -1329,26 +1330,33 @@ int main(int argc, char **argv) {
     // Lower accuracy requirements for FP16 (1e-4f also too much for TF32 on kernels 3 & 4)
     float accuracy_threshold = (kernel_num <= 4) ? 1e-3f : 1e-2f;
 
-    // first check the correctness of the kernel
-    attention_forward_cpu(out, preatt, att, inp, B, T, C, NH);
-    for (int j = 0; j < sizeof(block_sizes) / sizeof(int); j++) {
-        int block_size = block_sizes[j];
-        printf("Checking block size %d.\n", block_size);
-        attention_forward(kernel_num, d_out, d_stats, d_vaccum, d_qkvr, d_preatt, d_att, d_inp, B, T, C, NH, block_size);
-        // all kernels should produce the correct output out
-        // todo - make accuracy threshold dynamic and depend on FP16 vs FP32?
-        validate_result(d_out, out, "out", B * T * C, accuracy_threshold);
-        // but as for preatt and att, things get a bit more complicated:
-        if (kernel_num != 2 && kernel_num < 5) {
-            // kernel 2 (knowingly) fails att/preatt because it uses a different algorithm
-            // that estimates the softmax online and never materializes preatt/att
-            validate_result(d_att, att, "att", B * NH * T * T, accuracy_threshold);
+    for(int i = 0; i < 2; ++i) {
+        int window = i == 0 ? -1 : 128;
+        if((kernel_num != 1) && window > 0) {
+            continue;
         }
-        if (kernel_num != 2 && kernel_num < 4) {
-            // kernel 4 (knowingly) fails preatt because it fuses the scale normalization
-            // into the softmax, so preatt is off by 1.0f / sqrt(HS)
-            // but att and out (checked below) should match.
-            validate_result(d_preatt, preatt, "preatt", B * NH * T * T, accuracy_threshold);
+        // first check the correctness of the kernel
+        attention_forward_cpu(out, preatt, att, inp, B, T, C, NH, window);
+        for (int j = 0; j < sizeof(block_sizes) / sizeof(int); j++) {
+            int block_size = block_sizes[j];
+            printf("Checking block size %d.\n", block_size);
+            attention_forward(kernel_num, d_out, d_stats, d_vaccum, d_qkvr, d_preatt, d_att, d_inp, B, T, C, NH,
+                              window, block_size);
+            // all kernels should produce the correct output out
+            // todo - make accuracy threshold dynamic and depend on FP16 vs FP32?
+            validate_result(d_out, out, "out", B * T * C, accuracy_threshold);
+            // but as for preatt and att, things get a bit more complicated:
+            if (kernel_num != 2 && kernel_num < 5) {
+                // kernel 2 (knowingly) fails att/preatt because it uses a different algorithm
+                // that estimates the softmax online and never materializes preatt/att
+                validate_result(d_att, att, "att", B * NH * T * T, accuracy_threshold);
+            }
+            if (kernel_num != 2 && kernel_num < 4) {
+                // kernel 4 (knowingly) fails preatt because it fuses the scale normalization
+                // into the softmax, so preatt is off by 1.0f / sqrt(HS)
+                // but att and out (checked below) should match.
+                validate_result(d_preatt, preatt, "preatt", B * NH * T * T, accuracy_threshold);
+            }
         }
     }
     printf("All results match. Starting benchmarks.\n\n");
@@ -1361,7 +1369,7 @@ int main(int argc, char **argv) {
 
         float elapsed_time = benchmark_kernel(repeat_times, attention_forward,
                                               kernel_num, d_out, d_stats, d_vaccum, d_qkvr, d_preatt, d_att,
-                                              d_inp, B, T, C, NH, block_size);
+                                              d_inp, B, T, C, NH, -1, block_size);
 
         printf("block_size %4d | time %f ms\n", block_size, elapsed_time);
     }
