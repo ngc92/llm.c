@@ -332,14 +332,6 @@ __global__ void softmax_forward_kernel4(float* out, const float* inp, int N, int
 }
 
 
-__device__ float& vec_at(float4& vec, int index) {
-    return reinterpret_cast<float*>(&vec)[index];
-}
-
-__device__ float vec_at(const float4& vec, int index) {
-    return reinterpret_cast<const float*>(&vec)[index];
-}
-
 __global__ void softmax_forward_kernel5(float* out, float inv_temperature, const float* inp, int N, int T) {
     // inp, out shape: (N, T, T), where N = B * NH
     // fuses the multiplication by scale inside attention
@@ -363,16 +355,15 @@ __global__ void softmax_forward_kernel5(float* out, float inv_temperature, const
     float maxval = -FLT_MAX;
     float sumval = 0.0f;
 
-    const float4* x_vec = reinterpret_cast<const float4*>(x);
     for (int i = warp.thread_rank(); i < pos_by_4; i += warp.size()) {
-        float4 v = x_vec[i];
+        f128 v = load128(x + 4*i);
         float old_maxval = maxval;
         for(int k = 0; k < 4; ++k) {
-            maxval = fmaxf(maxval, vec_at(v, k));
+            maxval = fmaxf(maxval, v[k]);
         }
         sumval *= expf(inv_temperature * (old_maxval - maxval));
         for(int k = 0; k < 4; ++k) {
-            sumval += expf(inv_temperature * (vec_at(v, k) - maxval));
+            sumval += expf(inv_temperature * (v[k] - maxval));
         }
     }
 
