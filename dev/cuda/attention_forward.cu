@@ -157,8 +157,8 @@ void attention_forward_cpu(float* out, float* preatt, float* att,
 // ----------------------------------------------------------------------------
 // GPU kernels
 
-__global__ void attention_query_key_kernel1(float* preatt, const float* inp,
-                                           int B, int T, int C, int NH) {
+__global__ void attention_query_key_kernel1(float* preatt, const floatX* inp,
+                                            int B, int T, int C, int NH) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int total_threads = B * NH * T * T;
 
@@ -175,21 +175,21 @@ __global__ void attention_query_key_kernel1(float* preatt, const float* inp,
 
         int C3 = C*3;
         int hs = C / NH; // head size
-        const float* query_t = inp + b * T * C3 + t * C3 + h * hs;
-        const float* key_t2 = inp + b * T * C3 + t2 * C3 + h * hs + C; // +C because it's key
+        const floatX* query_t = inp + b * T * C3 + t * C3 + h * hs;
+        const floatX* key_t2 = inp + b * T * C3 + t2 * C3 + h * hs + C; // +C because it's key
 
         // (query_t) dot (key_t2)
         float val = 0.0f;
         for (int i = 0; i < hs; i++) {
-            val += query_t[i] * key_t2[i];
+            val += (float)query_t[i] * (float)key_t2[i];
         }
-        val *= 1.0 / sqrtf(hs);
+        val *= 1.f / sqrtf(hs);
 
         preatt[idx] = val;
     }
 }
 
-__global__ void attention_softmax_kernel1(float* att, const float* preatt,
+__global__ void attention_softmax_kernel1(floatX* att, const float* preatt,
                                          int B, int T, int NH) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int total_threads = B * T * NH;
@@ -200,7 +200,7 @@ __global__ void attention_softmax_kernel1(float* att, const float* preatt,
         int b = idx / (NH * T);
 
         const float* preatt_bth = preatt + b*NH*T*T + h*T*T + t*T;
-        float* att_bth = att + b*NH*T*T + h*T*T + t*T;
+        floatX* att_bth = att + b*NH*T*T + h*T*T + t*T;
 
         // find maxval
         float maxval = -FLT_MAX;
@@ -215,14 +215,13 @@ __global__ void attention_softmax_kernel1(float* att, const float* preatt,
         for (int t2 = 0; t2 <= t; t2++) {
             float expv = expf(preatt_bth[t2] - maxval);
             expsum += expv;
-            att_bth[t2] = expv;
         }
         float expsum_inv = expsum == 0.0f ? 0.0f : 1.0f / expsum;
 
         // normalize to get the softmax
         for (int t2 = 0; t2 < T; t2++) {
             if (t2 <= t) {
-                att_bth[t2] *= expsum_inv;
+                att_bth[t2] = expf(preatt_bth[t2] - maxval) * expsum_inv;
             } else {
                 // causal attention mask. not strictly necessary to set to zero here
                 // only doing this explicitly for debugging and checking to PyTorch
@@ -388,7 +387,7 @@ __global__ void softmax_forward_kernel5(float* out, float inv_temperature, const
 }
 
 
-__global__ void attention_value_kernel1(float* out, const float* att, const float* inp,
+__global__ void attention_value_kernel1(floatX* out, const floatX* att, const floatX* inp,
                                        int B, int T, int C, int NH) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int total_threads = B * T * NH;
@@ -401,15 +400,15 @@ __global__ void attention_value_kernel1(float* out, const float* att, const floa
         int C3 = C*3;
         int hs = C / NH; // head size
 
-        float* out_bth = out + b * T * C + t * C + h * hs;
-        const float* att_bth = att + b*NH*T*T + h*T*T + t*T;
+        floatX* out_bth = out + b * T * C + t * C + h * hs;
+        const floatX* att_bth = att + b*NH*T*T + h*T*T + t*T;
 
         for (int i = 0; i < hs; i++) { out_bth[i] = 0.0f; }
         for (int t2 = 0; t2 <= t; t2++) {
-           const  float* value_t2 = inp + b * T * C3 + t2 * C3 + h * hs + C*2; // +C*2 because it's value
+           const floatX* value_t2 = inp + b * T * C3 + t2 * C3 + h * hs + C*2; // +C*2 because it's value
             float att_btht2 = att_bth[t2];
             for (int i = 0; i < hs; i++) {
-                out_bth[i] += att_btht2 * value_t2[i];
+                out_bth[i] += (float)att_btht2 * (float)value_t2[i];
             }
         }
     }
@@ -672,8 +671,8 @@ __global__ void attention_forward_fused1(float* out, float* preatt, float* att,
 // ----------------------------------------------------------------------------
 // kernel launcher
 
-void attention_forward1(float* out, float* preatt, float* att,
-                       const float* inp,
+void attention_forward1(floatX* out, float* preatt, floatX* att,
+                       const floatX* inp,
                        int B, int T, int C, int NH,
                        const int block_size) {
     // attention calculation
@@ -1218,9 +1217,9 @@ void attention_forward_cudnn(floatX* out,  // output: (B, T, NH, HS)
 
 // kernel version dispatch
 void attention_forward(int kernel_num,
-                       float* out, float* stats, float* vaccum,
-                       float* qkvr, float* preatt, float* att,
-                       float* inp,
+                       floatX* out, float* stats, float* vaccum,
+                       floatX* qkvr, float* preatt, floatX* att,
+                       floatX* inp,
                        int B, int T, int C, int NH,
                        const int block_size) {
     switch (kernel_num) {
@@ -1228,23 +1227,23 @@ void attention_forward(int kernel_num,
             attention_forward1(out, preatt, att, inp, B, T, C, NH, block_size);
             break;
         case 2:
-            attention_forward2(out, inp, B, T, C, NH, block_size);
+            //attention_forward2(out, inp, B, T, C, NH, block_size);
             break;
         case 3:
-            attention_forward3(out, vaccum, qkvr, preatt, att, inp, B, T, C, NH, block_size);
+            //attention_forward3(out, vaccum, qkvr, preatt, att, inp, B, T, C, NH, block_size);
             break;
         case 4:
-            attention_forward4(out, vaccum, qkvr, preatt, att, inp, B, T, C, NH, block_size);
+            //attention_forward4(out, vaccum, qkvr, preatt, att, inp, B, T, C, NH, block_size);
             break;
         case 5:
-            attention_forward5(out, (floatX*)vaccum, (floatX*)qkvr,
-                               (floatX*)preatt, (floatX*)att,
-                               inp, B, T, C, NH, block_size, false);
+            //attention_forward5(out, (floatX*)vaccum, (floatX*)qkvr,
+            //                   (floatX*)preatt, (floatX*)att,
+            //                   inp, B, T, C, NH, block_size, false);
             break;
         case 6: // skip permutes for perf passes (to analyse perf as if in/out were truly 16-bit)
-            attention_forward5(out, (floatX*)vaccum, (floatX*)qkvr,
-                               (floatX*)preatt, (floatX*)att,
-                               inp, B, T, C, NH, block_size, true);
+            //attention_forward5(out, (floatX*)vaccum, (floatX*)qkvr,
+            //                   (floatX*)preatt, (floatX*)att,
+            //                   inp, B, T, C, NH, block_size, true);
             break;
         #ifdef ENABLE_CUDNN
         case 10:
@@ -1293,21 +1292,21 @@ int main(int argc, char **argv) {
     float* inp = make_random_float(B * T * 3 * C);
 
     // move to GPU
-    float* d_out;
+    floatX* d_out;
     float* d_stats; // for cuDNN
     float* d_vaccum;
-    float* d_qkvr;
+    floatX* d_qkvr;
     float* d_preatt;
-    float* d_att;
-    float* d_inp;
-    cudaCheck(cudaMalloc(&d_out, B * T * C * sizeof(float)));
+    floatX* d_att;
+    floatX* d_inp;
+    cudaCheck(cudaMalloc(&d_out, B * T * C * sizeof(floatX)));
     cudaCheck(cudaMalloc(&d_stats, B * NH * T * sizeof(float)));
     cudaCheck(cudaMalloc(&d_vaccum, B * T * C * sizeof(float)));
-    cudaCheck(cudaMalloc(&d_qkvr, B * T * 3 * C * sizeof(float)));
+    cudaCheck(cudaMalloc(&d_qkvr, B * T * 3 * C * sizeof(floatX)));
     cudaCheck(cudaMalloc(&d_preatt, B * NH * T * T * sizeof(float)));
-    cudaCheck(cudaMalloc(&d_att, B * NH * T * T * sizeof(float)));
-    cudaCheck(cudaMalloc(&d_inp, B * T * 3 * C * sizeof(float)));
-    cudaCheck(cudaMemcpy(d_inp, inp, B * T * 3 * C * sizeof(float), cudaMemcpyHostToDevice));
+    cudaCheck(cudaMalloc(&d_att, B * NH * T * T * sizeof(floatX)));
+    cudaCheck(cudaMalloc(&d_inp, B * T * 3 * C * sizeof(floatX)));
+    cudaCheck(memcpy_convert(d_inp, inp,  B * T * 3 * C));
 
     // read kernel_num from command line
     int kernel_num = 1;

@@ -91,6 +91,7 @@ typedef struct {
     int num_layers; // number of layers, e.g. 12
     int num_heads; // number of heads in attention, e.g. 12
     int channels; // number of channels, e.g. 768
+    int attn_window; // setting this to a positive value enables alternating banded+dense attention
 } GPT2Config;
 
 // the parameters of the model

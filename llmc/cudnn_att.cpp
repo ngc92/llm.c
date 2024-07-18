@@ -56,7 +56,7 @@ using cache_type_fwd = std::map<std::tuple<int,int,int,int, int>, std::shared_pt
 using cache_type_bwd = std::map<std::tuple<int,int,int,int>, std::shared_ptr<fe::graph::Graph>>;
 
 // Loosely based on cuDNN frontend samples functions and massively simplified
-auto lookup_cache_or_build_graph_fwd(int B,int H,int T,int HS, int is_inference_only) {
+auto lookup_cache_or_build_graph_fwd(int B, int H, int T, int HS, int sliding_window, int is_inference_only) {
 
     static cache_type_fwd user_maintained_cache_fwd;
 
@@ -96,6 +96,9 @@ auto lookup_cache_or_build_graph_fwd(int B,int H,int T,int HS, int is_inference_
     sdpa_options.set_is_inference(is_inference_only);
     sdpa_options.set_attn_scale(attn_scale);
     sdpa_options.set_causal_mask(true);
+    if(sliding_window > 0) {
+        sdpa_options.set_sliding_window_length(sliding_window);
+    }
 
     // Create the graph operation and get the output tensors back
     auto [O, stats] = graph->sdpa(Q, K, V, sdpa_options);
@@ -133,7 +136,7 @@ auto lookup_cache_or_build_graph_fwd(int B,int H,int T,int HS, int is_inference_
     return graph;
 }
 
-auto lookup_cache_or_build_graph_bwd(int B, int NH, int T, int HS) {
+auto lookup_cache_or_build_graph_bwd(int B, int NH, int T, int HS, int sliding_window) {
     static cache_type_bwd user_maintained_cache_bwd;
 
     auto key = std::make_tuple(B, NH, T, HS);
@@ -188,6 +191,9 @@ auto lookup_cache_or_build_graph_bwd(int B, int NH, int T, int HS) {
 #endif
                             .set_causal_mask(true)
                             .set_attn_scale(attn_scale);
+    if(sliding_window > 0) {
+        sdpa_backward_options.set_sliding_window_length(sliding_window);
+    }
 
     // Create the graph operation and get the output tensors back
     auto [dQ, dK, dV] = graph->sdpa_backward(Q, K, V, O, dO, stats, sdpa_backward_options);

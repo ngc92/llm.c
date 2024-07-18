@@ -7,6 +7,9 @@ Attention, as a fallback when we do not use the Flash Attention from cuDNN
 #include "cuda_utils.cuh"
 #include "cublas_common.h"
 
+#define ENABLE_BF16
+#include "common.h"
+
 // ----------------------------------------------------------------------------
 // CUDA kernels
 
@@ -108,8 +111,7 @@ __global__ void softmax_forward_kernel5(floatX* out, float inv_temperature, cons
     const floatX* x = inp + idx * T;
 
     // not INF, so we don't get NaNs accidentally when subtracting two values.
-    const float flt_max = 340282346638528859811704183484516925440.0f; // to avoid including float.h
-    float maxval = -flt_max;
+    float maxval = -FLT_MAX;
     float sumval = 0.0f;
 
     const floatX* x_aligned = reinterpret_cast<const floatX*>(__builtin_assume_aligned(x, 16));
