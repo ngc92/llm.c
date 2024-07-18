@@ -70,6 +70,7 @@ void adamw_update(Tp* params_memory, float* master_params_memory, Tg* grads_memo
     int num_blocks = CEIL_DIV(num_parameters, block_size);
     float beta1_correction = 1.0f - powf(beta1, t);
     float beta2_correction = 1.0f - powf(beta2, t);
+    // dispatch to the correct kernel template instantiation based on m's dtype
     if(m_memory.dtype() == DType::BF16) {
         adamw_kernel3<<<dim3(num_blocks, num_slices), block_size, 0, stream>>>(
                 params_memory, master_params_memory, grads_memory,

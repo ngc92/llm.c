@@ -315,6 +315,7 @@ typedef struct {
     bool init_state;   // set to true if master weights need to be initialized
     int gelu_fusion; // fuse gelu via cuBLASLt (0=none, 1=forward, 2=forward+backward)
     int recompute; // recompute gelu | layernorm forward during model backward? 0|1|2
+    DType m_dtype;  // which dtype to use for momentum m? fp32|bf16
     // todo - if other functions need cpu scratch buffers in the future, reuse as generic scratch?
     int* workload_indices; // encoder_backward, B*T*num_c_groups (int)
     int4* bucket_info;     // encoder_backward, B*T*num_c_groups (int4) - size for worst case
@@ -339,6 +340,7 @@ void gpt2_init_common(GPT2 *model) {
     model->bucket_info = NULL; // on cpu, for encoder_backward
     // memory lazily initialized in update()
     model->m_memory = GenericBufferView();
+    model->m_dtype = DType::FP32;
     model->v_memory = NULL;
     model->master_weights = NULL;
     // other default settings
@@ -388,11 +390,11 @@ void gpt2_allocate_state(GPT2 *model, int B, int T) {
     model->bucket_info = (int4*)mallocCheck(sizeof(int4) * model->batch_size * model->seq_len * num_c_groups);
 
     size_t shard_num_parameters = multi_gpu_config.shard_num_parameters; // num parameters we are responsible for
-    printf0("allocating %zu MiB for AdamW optimizer state m\n", (shard_num_parameters * sizeof(float)) >> 20);
+    printf0("allocating %zu MiB for AdamW optimizer state m\n", (shard_num_parameters * sizeof_dtype(model->m_dtype)) >> 20);
     printf0("allocating %zu MiB for AdamW optimizer state v\n", (shard_num_parameters * sizeof(float)) >> 20);
     assert(model->m_memory.empty());
     assert(model->v_memory == nullptr);
-    model->m_memory = GenericBufferView::allocate(shard_num_parameters, DType::FP32);
+    model->m_memory = GenericBufferView::allocate(shard_num_parameters, model->m_dtype);
     cudaCheck(cudaMalloc((void**)&model->v_memory, shard_num_parameters * sizeof(float)));
 
     if (model->use_master_weights == 1) {
@@ -1122,7 +1124,7 @@ float gpt2_estimate_mfu(GPT2 *model, int num_tokens, float dt) {
 void gpt2_free(GPT2 *model) {
     cudaFreeCheck(&model->params_memory);
     cudaFreeCheck(&model->grads_memory);
-    cudaFree(model->m_memory.ptr());
+    model->m_memory.free();
     cudaFreeCheck(&model->v_memory);
     cudaFreeCheck(&model->master_weights);
     cudaFreeCheck(&model->acts_memory);
@@ -1349,6 +1351,7 @@ void error_usage() {
     fprintf(stderr, "  -c <float>  weight decay (default = 0.0f)\n");
     fprintf(stderr, "  -sl <float> outlier stability: skip update if loss goes above this in zscore (0.0f=off)\n");
     fprintf(stderr, "  -sg <float> outlier stability: skip update if grad_norm goes above this in zscore (0.0f=off)\n");
+    fprintf(stderr, "  -dm <str>   data type to use for m; fp32 (default) or bf16\n");
     // evaluation
     fprintf(stderr, "  -v <int>    val_loss_every, how often we evaluate val loss (default = 20)\n");
     fprintf(stderr, "  -m <int>    val_max_steps, up to how many val batches to estimate val loss? (default = 20)\n");
@@ -1394,6 +1397,7 @@ int main(int argc, char *argv[]) {
     int warmup_iterations = 0;
     float final_learning_rate_frac = 1.0f; // final fraction of learning rate, at end of training
     float weight_decay = 0.0f;
+    DType m_type = DType::FP32;
     float skip_update_lossz = 0.0f; // skip update if loss goes above this in zscore
     float skip_update_gradz = 0.0f; // skip update if grad_norm goes above this in zscore
     int val_loss_every = 20; // every how many steps do we eval validation loss?
@@ -1428,7 +1432,7 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 'y') { resume = atoi(argv[i+1]); }
         else if (argv[i][1] == 'b') { B = atoi(argv[i+1]); } // Per-GPU (micro) batch size
         else if (argv[i][1] == 't') { T = atoi(argv[i+1]); }
-        else if (argv[i][1] == 'd') { total_batch_size = atoi(argv[i+1]); }
+        else if (argv[i][1] == 'd' && argv[i][2] == '\0') { total_batch_size = atoi(argv[i+1]); }
         else if (argv[i][1] == 'l') { learning_rate = atof(argv[i+1]); }
         else if (argv[i][1] == 'u') { warmup_iterations = atoi(argv[i+1]); }
         else if (argv[i][1] == 'q') { final_learning_rate_frac = atof(argv[i+1]); }
@@ -1456,6 +1460,7 @@ int main(int argc, char *argv[]) {
         else if (argv[i][1] == 's' && argv[i][2] == 'g') { skip_update_gradz = atof(argv[i+1]); }
         else if (argv[i][1] == 'n' && argv[i][2] == 'k') { checkpoints_keep = atoi(argv[i+1]); }
         else if (argv[i][1] == 'n' && argv[i][2] == 'm') { major_checkpoint_every = atoi(argv[i+1]); }
+        else if (argv[i][1] == 'd' && argv[i][2] == 'm') { m_type = dtype_from_str(argv[i+1]); }
         else { error_usage(); }
     }
 
@@ -1545,6 +1550,7 @@ int main(int argc, char *argv[]) {
     model.use_master_weights = use_master_weights;
     model.gelu_fusion = gelu_fusion;
     model.recompute = recompute;
+    model.m_dtype = m_type;
     printf0("| weight init method    | %-50s |\n", resuming == 1 ? "intermediate checkpoint" : load_filename);
     printf0("| max_sequence_length T | %-50d |\n", model.config.max_seq_len);
     printf0("| vocab_size V          | %-50d |\n", model.config.vocab_size);

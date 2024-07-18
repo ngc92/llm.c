@@ -74,6 +74,9 @@ jobs:
       - name: Run recompute LN
         run: ./test_gpt2cu -r 2
 
+      - name: Run with bf16 momentum
+        run: ./test_gpt2cu -dm bf16
+
       - name: Train model fp32 (With OpenMP)
         run: OMP_NUM_THREADS=8 ./train_gpt2fp32cu
 

@@ -87,6 +87,19 @@ enum class DType : uint8_t {
     FP32, FP16, BF16
 };
 
+DType dtype_from_str(const char* name) {
+    if(strcmp(name, "fp32") == 0) {
+        return DType::FP32;
+    } else if (strcmp(name, "bf16") == 0) {
+        return DType::BF16;
+    } else if(strcmp(name, "fp16") == 0) {
+        return DType::FP16;
+    } else {
+        fprintf(stderr, "Unknown datatype %s\n", name);
+        exit(EXIT_FAILURE);
+    }
+}
+
 // Given a datatype enum, returns the underlying number of bytes
 // for a scalar of that type
 size_t sizeof_dtype(DType type) {
@@ -108,10 +121,19 @@ DType dtype_of(nv_bfloat16 * f) { return DType::BF16; }
 DType dtype_of(half * f) { return DType::FP16; }
 
 
+// Utility that contains a (type-erased) pointer to some GPU memory, as well as type and number of element
+// metadata. Most of the time, we just pass around these buffers on the CPU side, it is only inside the kernels
+// that we need to know the actual types, so by using a GenericBufferView we avoid having to template lots of host-side
+// functions, while still allowing to select the dtype at runtime.
 class GenericBufferView {
 public:
     GenericBufferView() : ptr_(nullptr), size_(0), dtype_(DType::FP32) {}
     GenericBufferView(void* pointer, size_t count, DType type) : ptr_(pointer), size_(count), dtype_(type) {}
+
+    void free() {
+        cudaFreeCheck(&ptr_);
+        size_ = 0;
+    }
 
     static GenericBufferView allocate(size_t nelem, DType type) {
         void* ptr;
@@ -119,6 +141,7 @@ public:
         return GenericBufferView(ptr, nelem, type);
     }
 
+    // Gets a view to a subset of the elements of this buffer starting at start
     GenericBufferView sub(ptrdiff_t start) {
         assert(start < size_);
         return GenericBufferView((char*)ptr_ + start * sizeof_dtype(dtype_), size_ - start, dtype_);
@@ -135,6 +158,8 @@ private:
     DType dtype_;
 };
 
+// gets a typed pointer from a generic buffer. If the requested type does not match the type in the buffer,
+// the program terminates.
 template<class T>
 T* get_as(GenericBufferView b) {
     if(dtype_of((T*) nullptr) == b.dtype()) {

@@ -123,6 +123,7 @@ int main(int argc, char *argv[]) {
         if (argv[i][1] == 'w') { model.use_master_weights = atoi(argv[i+1]); }
         else if (argv[i][1] == 'r') { model.recompute = atoi(argv[i+1]); }
         else if (argv[i][1] == 'g' && argv[i][2] == 'e') { model.gelu_fusion = atoi(argv[i+1]); }
+        else if (argv[i][1] == 'd' && argv[i][2] == 'm') { model.m_dtype = dtype_from_str(argv[i+1]); }
     }
 
     // load additional information that we will use for debugging and error checking
