@@ -295,7 +295,7 @@ typedef struct {
     ParameterTensors grads;
     void* grads_memory;
     // buffers for the AdamW optimizer
-    float* m_memory;
+    GenericBufferView m_memory;
     float* v_memory;
     float* master_weights;     // is NULL unless fp32 weights is enabled.
     // the activations of the model, and their sizes
@@ -338,7 +338,7 @@ void gpt2_init_common(GPT2 *model) {
     model->workload_indices = NULL; // on cpu, for encoder_backward
     model->bucket_info = NULL; // on cpu, for encoder_backward
     // memory lazily initialized in update()
-    model->m_memory = NULL;
+    model->m_memory = GenericBufferView();
     model->v_memory = NULL;
     model->master_weights = NULL;
     // other default settings
@@ -390,9 +390,9 @@ void gpt2_allocate_state(GPT2 *model, int B, int T) {
     size_t shard_num_parameters = multi_gpu_config.shard_num_parameters; // num parameters we are responsible for
     printf0("allocating %zu MiB for AdamW optimizer state m\n", (shard_num_parameters * sizeof(float)) >> 20);
     printf0("allocating %zu MiB for AdamW optimizer state v\n", (shard_num_parameters * sizeof(float)) >> 20);
-    assert(model->m_memory == nullptr);
+    assert(model->m_memory.empty());
     assert(model->v_memory == nullptr);
-    cudaCheck(cudaMalloc((void**)&model->m_memory, shard_num_parameters * sizeof(float)));
+    model->m_memory = GenericBufferView::allocate(shard_num_parameters, DType::FP32);
     cudaCheck(cudaMalloc((void**)&model->v_memory, shard_num_parameters * sizeof(float)));
 
     if (model->use_master_weights == 1) {
@@ -1016,7 +1016,7 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
     // selectively weight decay some, but not all tensors :(
     // TODO: revisit and probably refactor this entire function
     NVTX_RANGE_FN();
-    if(model->grads_memory == nullptr || model->m_memory == nullptr || model->v_memory == nullptr) {
+    if(model->grads_memory == nullptr || model->m_memory.empty() || model->v_memory == nullptr) {
         fprintf(stderr, "Need to allocate optimizer state before update");
         exit(EXIT_FAILURE);
     }
@@ -1025,7 +1025,7 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
     if(init_state) {
         model->init_state = false;
         NvtxRange rng("InitOpt");
-        cudaCheck(cudaMemset(model->m_memory, 0, multi_gpu_config->shard_num_parameters * sizeof(float)));
+        cudaCheck(cudaMemset(model->m_memory.ptr(), 0, model->m_memory.bytes()));
         cudaCheck(cudaMemset(model->v_memory, 0, multi_gpu_config->shard_num_parameters * sizeof(float)));
     }
     // AdamW update
@@ -1053,7 +1053,7 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
         floatX* grad_ptr = (floatX*)model->grads_memory + local_offset_full;
 
         ptrdiff_t opt_state_offset = multi_gpu_config->zero_stage < 1 ?  local_offset_full : local_offset_partial;
-        float* m_ptr = model->m_memory + opt_state_offset;
+        GenericBufferView m_ptr = model->m_memory.sub(opt_state_offset);
         float* v_ptr = model->v_memory + opt_state_offset;
         float* master_ptr = nullptr;
         if (model->master_weights != nullptr) { master_ptr = model->master_weights + opt_state_offset; }
@@ -1122,7 +1122,7 @@ float gpt2_estimate_mfu(GPT2 *model, int num_tokens, float dt) {
 void gpt2_free(GPT2 *model) {
     cudaFreeCheck(&model->params_memory);
     cudaFreeCheck(&model->grads_memory);
-    cudaFreeCheck(&model->m_memory);
+    cudaFree(model->m_memory.ptr());
     cudaFreeCheck(&model->v_memory);
     cudaFreeCheck(&model->master_weights);
     cudaFreeCheck(&model->acts_memory);
@@ -1196,7 +1196,7 @@ void save_state(const char* filename, int step, GPT2* model, DataLoader* loader)
 
     // write AdamW m, v, and master_weights here (they are all float)
     size_t shard_num_parameters = multi_gpu_config.shard_num_parameters;
-    device_to_file(state_file, model->m_memory, shard_num_parameters * sizeof(float), IO_BUF_SIZE, main_stream);
+    device_to_file(state_file, model->m_memory.ptr(), model->m_memory.bytes(), IO_BUF_SIZE, main_stream);
     device_to_file(state_file, model->v_memory, shard_num_parameters * sizeof(float), IO_BUF_SIZE, main_stream);
     if(model->use_master_weights) {
         device_to_file(state_file, model->master_weights, shard_num_parameters * sizeof(float), IO_BUF_SIZE, main_stream);
@@ -1237,9 +1237,9 @@ void load_state(int* step, GPT2* model, DataLoader* loader, const char* filename
         printf0("Error: Master weights requested, but not present in state file.");
         exit(EXIT_FAILURE);
     }
-    assert(model->m_memory != nullptr);
+    assert(!model->m_memory.empty());
     assert(model->v_memory != nullptr);
-    file_to_device(model->m_memory, state_file, shard_num_parameters * sizeof(float), IO_BUF_SIZE, main_stream);
+    file_to_device(model->m_memory.ptr(), state_file, model->m_memory.bytes(), IO_BUF_SIZE, main_stream);
     file_to_device(model->v_memory, state_file, shard_num_parameters * sizeof(float), IO_BUF_SIZE, main_stream);
     if(model->use_master_weights) {
         assert(model->master_weights != nullptr);

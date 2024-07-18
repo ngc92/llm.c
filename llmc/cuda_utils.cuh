@@ -108,6 +108,42 @@ DType dtype_of(nv_bfloat16 * f) { return DType::BF16; }
 DType dtype_of(half * f) { return DType::FP16; }
 
 
+class GenericBufferView {
+public:
+    GenericBufferView() : ptr_(nullptr), size_(0), dtype_(DType::FP32) {}
+    GenericBufferView(void* pointer, size_t count, DType type) : ptr_(pointer), size_(count), dtype_(type) {}
+
+    static GenericBufferView allocate(size_t nelem, DType type) {
+        void* ptr;
+        cudaCheck(cudaMalloc(&ptr, nelem * sizeof_dtype(type)));
+        return GenericBufferView(ptr, nelem, type);
+    }
+
+    GenericBufferView sub(ptrdiff_t start) {
+        assert(start < size_);
+        return GenericBufferView((char*)ptr_ + start * sizeof_dtype(dtype_), size_ - start, dtype_);
+    }
+
+    bool empty() { return ptr_ == nullptr; }
+    void* ptr() { return ptr_; }
+    DType dtype() const { return dtype_; }
+    size_t size() const { return size_; }
+    size_t bytes() const { return size_ * sizeof_dtype(dtype_); }
+private:
+    void* ptr_;
+    size_t size_;
+    DType dtype_;
+};
+
+template<class T>
+T* get_as(GenericBufferView b) {
+    if(dtype_of((T*) nullptr) == b.dtype()) {
+        return static_cast<T*>(b.ptr());
+    } else {
+        fprintf(stderr, "Trying to access buffer with incompatible type");
+        exit(EXIT_FAILURE);
+    }
+}
 
 // ----------------------------------------------------------------------------
 // Copy, cast functions
