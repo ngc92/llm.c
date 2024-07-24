@@ -215,10 +215,11 @@ void cudaMallocConditionallyManaged(void** out, size_t bytes, const char *file, 
     if(err == cudaErrorMemoryAllocation) {
         // if that fails, fallback to a managed allocation. It will be slower, but at least
         // it won't crash.
-        fprintf(stderr, "[WARN] Not enough space to allocate %zu bytes on device.\n"
+        fprintf(stderr, "[WARN] Not enough space to allocate %zu MiB on device.\n"
                         "       Falling back to managed allocation.\n"
                         "       Speed may be negatively affected.\n",
-                bytes);
+                bytes / 1024 / 1024);
+        // reset the error before the next API call
         cudaGetLastError();
         cudaCheck_(cudaMallocManaged(out, bytes), file, line);
     } else {
