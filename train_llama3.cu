@@ -112,7 +112,7 @@ typedef struct {
 constexpr const int NUM_PARAMETER_TENSORS = 16;
 typedef struct {
     floatX* wte; // (V, C)
-    floatX* wpe; // (V, C)
+    floatX* wlmhead; // (V, C)
     floatX* ln1w; // (L, C)
     floatX* ln1b; // (L, C)
     floatX* qkvw; // (L, 3*C, C)
@@ -186,7 +186,7 @@ void* malloc_and_point_parameters(ParameterTensors* params, size_t* param_elemen
     cudaCheck(cudaMalloc((void**)&params_memory, num_parameters_bytes));
     // assign all the tensors their place in the array
     floatX** ptrs[] = {
-        &params->wte, &params->wpe, &params->ln1w, &params->ln1b, &params->qkvw, &params->qkvb,
+        &params->wte, &params->wlmhead, &params->ln1w, &params->ln1b, &params->qkvw, &params->qkvb,
         &params->attprojw, &params->attprojb, &params->ln2w, &params->ln2b, &params->fcw, &params->fcb,
         &params->fcprojw, &params->fcprojb, &params->lnfw, &params->lnfb
     };
@@ -731,7 +731,7 @@ void llama3_forward(LLama3 *model, const int* inputs, size_t B, size_t T) {
         }
     }
 
-    matmul_forward_cublaslt(acts.output, acts.lnf, params.wpe, NULL, B, T, C, Vp, main_stream);
+    matmul_forward_cublaslt(acts.output, acts.lnf, params.wlmhead, NULL, B, T, C, Vp, main_stream);
     cudaCheck(cudaDeviceSynchronize());
 }
 
@@ -827,7 +827,7 @@ void llama3_backward_and_reduce(LLama3 *model, int* inputs, const int* targets, 
     // technically that is a small, inline backward() pass of calculating
     // total, final loss as the mean over all losses over all (B,T) positions in the batch
     // next: backward the classifier matmul
-    matmul_backward(model->acts.scratch_bt4c, grads.wpe, NULL, acts.output, acts.lnf, params.wpe, NULL, B, T, C, Vp, main_stream);
+    matmul_backward(model->acts.scratch_bt4c, grads.wlmhead, NULL, acts.output, acts.lnf, params.wlmhead, NULL, B, T, C, Vp, main_stream);
     // backward the final layernorm
     floatX* residual = acts.residual3 + (L-1) * B * T * C; // last residual is in residual3
     rmsnorm_backward(dresidual, grads.lnfw, scratchF, model->acts.scratch_bt4c, residual, params.lnfw, acts.lnf_rstd, B, T, C, main_stream);
@@ -958,7 +958,7 @@ void llama3_backward_and_reduce(LLama3 *model, int* inputs, const int* targets, 
         #endif
         cudaCheck(cudaMemcpyAsync(&model->mean_loss, model->accumulated_mean_loss, sizeof(float), cudaMemcpyDeviceToHost, main_stream));
         // reduce the gradients for non-transformer block parameters
-        floatX* const pointers[] = {grads.wte, grads.wpe, grads.lnfw, grads.lnfb};
+        floatX* const pointers[] = {grads.wte, grads.wlmhead, grads.lnfw, grads.lnfb};
         const size_t nelem[] = {Vp * C, Vp * C, C, C};
         multi_gpu_async_reduce_gradient(pointers, nelem, &multi_gpu_config, main_stream);
     }
