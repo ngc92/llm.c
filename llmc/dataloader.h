@@ -227,7 +227,7 @@ void dataloader_load_batch(DataLoader* loader) {
     size_t B = loader->B;
     size_t T = loader->T;
     // read B*T+1 tokens from the file into buffer
-    fseekCheck(loader->tokens_file, (int) current_offset, SEEK_SET);
+    fseekCheck(loader->tokens_file, (long) current_offset, SEEK_SET);
     freadCheck(loader->buffer, loader->token_dtype, B*T+1, loader->tokens_file);
     // depending on the dtype we have to access buffer differently
     assert(loader->token_dtype == sizeof(uint16_t) || loader->token_dtype == sizeof(uint32_t));
