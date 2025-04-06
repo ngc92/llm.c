@@ -14,6 +14,7 @@ int check_tensor(float *a, float *b, int n, const char* label, float threshold=1
     float epsilon = 0.079;      // BF16 epsilon value
     printf("---\n");
     printf("checking tensor: %s\n", label);
+    int nerror = 0;
     for (int i = 0; i < n; i++) {
         float t_eff = threshold + fabs(b[i]) * epsilon;
         float diff = fabsf(a[i] - b[i]);
@@ -27,11 +28,15 @@ int check_tensor(float *a, float *b, int n, const char* label, float threshold=1
         }
         if (diff > t_eff) {
             ok = 0;
+            ++nerror;
         }
         // print the first few elements so we can visually assess the "proof" of the comparison
         if (i < print_upto) {
             printf(diff <= t_eff ? "OK " :  "NOT OK ");
             printf("%f %f\n", a[i], b[i]);
+        } else if (!ok && nerror <= print_upto) {
+            // also print the first few errors, so we can see if there's a pattern
+            printf("NOT OK %f %f at %d \n", a[i], b[i], i);
         }
     }
     // print the final result
@@ -47,22 +52,22 @@ int check_tensor(float *a, float *b, int n, const char* label, float threshold=1
 
 // the same tensors as in the train file, but in float, which are used as reference
 typedef struct {
-    float*  wte; // (Vp, C)
-    float*  wpe; // (maxT, C)
-    float*  ln1w; // (L, C)
-    float*  ln1b; // (L, C)
-    float*  qkvw; // (L, 3*C, C)
-    float*  qkvb; // (L, 3*C)
-    float*  attprojw; // (L, C, C)
-    float*  attprojb; // (L, C)
-    float*  ln2w; // (L, C)
-    float*  ln2b; // (L, C)
-    float*  fcw; // (L, 4*C, C)
-    float*  fcb; // (L, 4*C)
-    float*  fcprojw; // (L, C, 4*C)
-    float*  fcprojb; // (L, C)
-    float*  lnfw; // (C)
-    float*  lnfb; // (C)
+    float* wte; // (V, C)
+    float* wlmhead; // (V, C)
+    float* ln1w; // (L, C)
+    float* ln1b; // (L, C)
+    float* qkvw; // (L, 3*C, C)
+    float* qkvb; // (L, 3*C)
+    float* attprojw; // (L, C, C)
+    float* attprojb; // (L, C)
+    float* ln2w; // (L, C)
+    float* ln2b; // (L, C)
+    float* fcw; // (L, 4*C, C)
+    float* fcb; // (L, 4*C)
+    float* fcprojw; // (L, C, 4*C)
+    float* fcprojb; // (L, C)
+    float* lnfw; // (C)
+    float* lnfb; // (C)
 } FloatParameterTensors;
 static_assert(sizeof(FloatParameterTensors) == NUM_PARAMETER_TENSORS * sizeof(void*), "Inconsistent sizes!");
 
@@ -106,8 +111,8 @@ int main(int argc, char *argv[]) {
     #endif
 
     // build the GPT-2 model from a checkpoint
-    GPT2 model;
-    gpt2_init_common(&model);
+    LLama3 model;
+    llama3_init_common(&model);
 
     llama3_build_from_checkpoint(&model, load_filename);
     size_t V = model.config.vocab_size;
@@ -168,10 +173,10 @@ int main(int argc, char *argv[]) {
     // overall OK signal for the test
     int allok = 1;
 
-    gpt2_allocate_state(&model, B, T);
+    llama3_allocate_state(&model, B, T);
 
     // First, do target-free forward pass to validate logits
-    gpt2_forward(&model, x, B, T);
+    llama3_forward(&model, x, B, T);
     // at this point, target should be equal to expected_logits, let's compare
     // copy logits to CPU so we can compare them
     floatX* logits_cpu_raw = (floatX*)mallocCheck(B * T * Vp * sizeof(floatX));
@@ -220,8 +225,8 @@ int main(int argc, char *argv[]) {
     for (int step = 0; step < 10; step++) {
         struct timespec start, end;
         clock_gettime(CLOCK_MONOTONIC, &start);
-        gpt2_forward(&model, x, B, T);
-        gpt2_backward_and_reduce(&model, x, y, 1, 0);
+        llama3_forward(&model, x, B, T);
+        llama3_backward_and_reduce(&model, x, y, 1, 0);
         clock_gettime(CLOCK_MONOTONIC, &end);
         double time_elapsed_s = (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) / 1e9;
 
@@ -292,9 +297,10 @@ int main(int argc, char *argv[]) {
             allok = allok & check_tensor(tensors1[15], tensors2[15], C, "lnfb", grad_thresholds[15]);
         }
 
-        float grad_norm = gpt2_calculate_grad_norm(&model, &multi_gpu_config);
+        float grad_norm = llama3_calculate_grad_norm(&model, &multi_gpu_config);
+        printf("Grad norm: %f\n", grad_norm);
         float grad_scale = (grad_norm > 1.0f) ? 1.0f / grad_norm : 1.0f;
-        gpt2_update(&model, 1e-4f, 0.9f, 0.95f, 1e-8f, 0.0f, grad_scale, step+1, &multi_gpu_config);
+        llama3_update(&model, 1e-5f, 0.9f, 0.95f, 1e-8f, 0.0f, grad_scale, step+1, &multi_gpu_config);
 
         // print the timing information at the end
         printf("step %d: loss %f (took %f ms)\n", step+1, model.mean_loss, time_elapsed_s * 1000);
@@ -306,16 +312,16 @@ int main(int argc, char *argv[]) {
 
     // expected losses are as follows, from Python
     float expected_losses[10] = {
-        5.270009f,
-        4.060681f,
-        3.320085f,
-        2.717550f,
-        2.181066f,
-        1.653923f,
-        1.168050f,
-        0.736873f,
-        0.401021f,
-        0.187493f
+        4.849688f,
+        3.070303f,
+        1.711614f,
+        1.056311f,
+        0.593335f,
+        0.428291f,
+        0.372275f,
+        0.360507f,
+        0.355562f,
+        0.334824f
     };
 
     // compare
@@ -329,7 +335,7 @@ int main(int argc, char *argv[]) {
     }
 
     // Finally, let's check determinism
-    gpt2_write_to_checkpoint(&model, "test_gpt2cu_model.ckpt");
+    llama3_write_to_checkpoint(&model, "test_gpt2cu_model.ckpt");
 
     DataLoader loader;
     dataloader_init(&loader, "dev/data/tinyshakespeare/tiny_shakespeare_val.bin", B, T, multi_gpu_config.process_rank, multi_gpu_config.num_processes, 1);
@@ -337,24 +343,24 @@ int main(int argc, char *argv[]) {
     int tokens[10];
     for (int step = 0; step < 10; step++) {
         dataloader_next_batch(&loader);
-        gpt2_forward(&model, loader.inputs, B, T);
-        gpt2_backward_and_reduce(&model, loader.inputs, loader.targets, 1, 0);
-        gpt2_update(&model, 1e-4f, 0.9f, 0.95f, 1e-8f, 0.0f, 1.0f, step+11, &multi_gpu_config);
+        llama3_forward(&model, loader.inputs, B, T);
+        llama3_backward_and_reduce(&model, loader.inputs, loader.targets, 1, 0);
+        llama3_update(&model, 1e-4f, 0.9f, 0.95f, 1e-8f, 0.0f, 1.0f, step+11, &multi_gpu_config);
         losses[step] = model.mean_loss;
         tokens[step] = loader.inputs[0];
     }
 
     // reload
-    gpt2_free(&model);
+    llama3_free(&model);
     llama3_build_from_checkpoint(&model, "test_gpt2cu_model.ckpt");
     int ld_step;
-    gpt2_allocate_state(&model, B, T);
+    llama3_allocate_state(&model, B, T);
     load_state(&ld_step, &model, &loader, "test_gpt2cu_state.ckpt");
     for (int step = 0; step < 10; step++) {
         dataloader_next_batch(&loader);
-        gpt2_forward(&model, loader.inputs, B, T);
-        gpt2_backward_and_reduce(&model, loader.inputs, loader.targets, 1, 0);
-        gpt2_update(&model, 1e-4f, 0.9f, 0.95f, 1e-8f, 0.0f, 1.0f, step+11, &multi_gpu_config);
+        llama3_forward(&model, loader.inputs, B, T);
+        llama3_backward_and_reduce(&model, loader.inputs, loader.targets, 1, 0);
+        llama3_update(&model, 1e-4f, 0.9f, 0.95f, 1e-8f, 0.0f, 1.0f, step+11, &multi_gpu_config);
 
         if(loader.inputs[0] != tokens[step]) {
             printf("Nondeterminism! Token mismatch at step %d: %d vs %d\n", step, tokens[step], loader.inputs[0]);
@@ -380,7 +386,7 @@ int main(int argc, char *argv[]) {
 
     // free everything
     dataloader_free(&loader);
-    gpt2_free(&model);
+    llama3_free(&model);
     common_free(model);
     free(x);
     free(y);
