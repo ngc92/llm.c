@@ -1,5 +1,5 @@
 #define TESTING
-#include "train_gpt2.cu"
+#include "train_llama3.cu"
 
 // poor man's tensor checker
 int check_tensor(float *a, float *b, int n, const char* label, float threshold=1e-0) {
@@ -100,16 +100,16 @@ int main(int argc, char *argv[]) {
 
     // set the right paths
     #if defined(ENABLE_BF16)
-    const char* load_filename = "gpt2_124M_bf16.bin";
+    const char* load_filename = "llama3.2_1B_bf16.bin";
     #else
-    const char* load_filename = "gpt2_124M.bin";
+    const char* load_filename = "llama3.2_1B.bin";
     #endif
 
     // build the GPT-2 model from a checkpoint
     GPT2 model;
     gpt2_init_common(&model);
 
-    gpt2_build_from_checkpoint(&model, load_filename);
+    llama3_build_from_checkpoint(&model, load_filename);
     size_t V = model.config.vocab_size;
     size_t Vp = model.config.padded_vocab_size;
     size_t maxT = model.config.max_seq_len;
@@ -126,13 +126,13 @@ int main(int argc, char *argv[]) {
     }
 
     // load additional information that we will use for debugging and error checking
-    FILE *state_file = fopenCheck("gpt2_124M_debug_state.bin", "rb");
+    FILE *state_file = fopenCheck("llama3_1B_debug_state.bin", "rb");
     int state_header[256];
     freadCheck(state_header, sizeof(int), 256, state_file);
-    if (state_header[0] != 20240327) { fprintf(stderr, "Bad magic state file\n"); exit(EXIT_FAILURE); }
+    if (state_header[0] != 20240803) { fprintf(stderr, "Bad magic state file\n"); exit(EXIT_FAILURE); }
     if (state_header[1] != 2) {
-        fprintf(stderr, "Bad version in state file\n");
-        fprintf(stderr, "---> HINT: try to re-run `python train_gpt2.py`\n");
+        fprintf(stderr, "Bad version in state file: %d\n", state_header[1]);
+        fprintf(stderr, "---> HINT: try to re-run `python train_llama3.py`\n");
         exit(EXIT_FAILURE);
     }
     int B = state_header[2]; // batch size, e.g. 4
@@ -346,7 +346,7 @@ int main(int argc, char *argv[]) {
 
     // reload
     gpt2_free(&model);
-    gpt2_build_from_checkpoint(&model, "test_gpt2cu_model.ckpt");
+    llama3_build_from_checkpoint(&model, "test_gpt2cu_model.ckpt");
     int ld_step;
     gpt2_allocate_state(&model, B, T);
     load_state(&ld_step, &model, &loader, "test_gpt2cu_state.ckpt");

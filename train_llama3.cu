@@ -90,22 +90,22 @@ cudaStream_t main_stream;
 constexpr const size_t IO_BUF_SIZE = 32 * 1024 * 1024;
 
 // ----------------------------------------------------------------------------
-// GPT-2 model definition
+// LLama-3 model definition
 
 typedef struct {
     int max_seq_len; // max sequence length, e.g. 1024
-    int vocab_size; // vocab size, e.g. 50257
-    int padded_vocab_size; // padded to e.g. %128==0, 50304
+    int vocab_size; // vocab size, e.g. 128256
+    int padded_vocab_size; // padded to e.g. %128==0, 128256
     int num_layers; // number of layers, e.g. 12
-    int num_heads; // number of query heads in attention, e.g. 12
-    int num_kv_heads; // number of key and value heads in attention, e.g. 4 (<-- new in Llama 3)
-    int channels; // number of channels, e.g. 768
+    int num_heads; // number of query heads in attention, e.g. 32
+    int num_kv_heads; // number of key and value heads in attention, e.g. 8 (<-- new in Llama 3)
+    int channels; // number of channels, e.g. 2048
     int multiple_of; // used in feedforward layer sizing, e.g. 1024 (<-- new in Llama 3)
     int use_scaled_rope; // whether to use scaled rope
     float ffn_dim_multiplier; // multiplier used in feedforward layer, e.g. 1.3 (<-- new in Llama 3)
     float norm_eps; // epsilon used in layernorm, e.g. 1e-5
     float rope_theta; // theta used in ROPE attention, e.g. 500000.0 (<-- new in Llama 3)
-} GPT2Config;
+} LLama3Config;
 
 // the parameters of the model
 constexpr const int NUM_PARAMETER_TENSORS = 16;
@@ -129,7 +129,7 @@ typedef struct {
 } ParameterTensors;
 static_assert(sizeof(ParameterTensors) == NUM_PARAMETER_TENSORS * sizeof(void*), "Inconsistent sizes!");
 
-void fill_in_parameter_sizes(size_t* param_sizes, size_t* param_sizeof, GPT2Config config) {
+void fill_in_parameter_sizes(size_t* param_sizes, size_t* param_sizeof, LLama3Config config) {
     // see train_llama3.py write_tensors() function for detailed docs of some of the trickery here
     // trick 1: all biases are still present but set to zero
     // trick 2: the SwiGLU weights are "packed" into one, concatenated
@@ -247,7 +247,7 @@ struct TensorSpec {
 
 #define TENSOR_SPEC(pointer, size) TensorSpec{(void**)(&pointer), (size), dtype_of(pointer)};
 
-void fill_in_activation_sizes(const ActivationTensors* data, TensorSpec (&tensors)[NUM_ACTIVATION_TENSORS], size_t B, size_t T, GPT2Config config, int recompute) {
+void fill_in_activation_sizes(const ActivationTensors* data, TensorSpec (&tensors)[NUM_ACTIVATION_TENSORS], size_t B, size_t T, LLama3Config config, int recompute) {
     const size_t Vp = config.padded_vocab_size;
     const size_t L = config.num_layers;
     const size_t NH = config.num_heads;
@@ -322,7 +322,7 @@ void* malloc_and_point_activations(TensorSpec (&tensors)[NUM_ACTIVATION_TENSORS]
 }
 
 typedef struct {
-    GPT2Config config;
+    LLama3Config config;
     // the weights of the model, and their sizes
     ParameterTensors params;
     size_t param_elements[NUM_PARAMETER_TENSORS];
@@ -359,9 +359,9 @@ typedef struct {
     int* workload_indices; // encoder_backward, B*T*num_c_groups (int)
     int4* bucket_info;     // encoder_backward, B*T*num_c_groups (int4) - size for worst case
     floatX* freqs_cis; // (T, hd) for RoPE
-} GPT2;
+} LLama3;
 
-void gpt2_init_common(GPT2 *model) {
+void llama3_init_common(LLama3 *model) {
     // common inits outside of the model weights
     // memory lazily initialized in forward()
     model->acts_memory = NULL;
@@ -391,7 +391,7 @@ void gpt2_init_common(GPT2 *model) {
     model->freqs_cis = NULL;
 }
 
-void gpt2_allocate_weights(GPT2 *model) {
+void llama3_allocate_weights(LLama3 *model) {
     // fill in all the parameter tensor dimensions and types
     fill_in_parameter_sizes(model->param_elements, model->param_sizeof, model->config);
     model->num_parameters = 0;
@@ -415,7 +415,7 @@ void gpt2_allocate_weights(GPT2 *model) {
     model->params_memory = malloc_and_point_parameters(&model->params, model->param_elements, model->param_sizeof);
 }
 
-void gpt2_allocate_state(GPT2 *model, int B, int T) {
+void llama3_allocate_state(LLama3 *model, int B, int T) {
     printf0("allocating %d MiB for parameter gradients\n", (int)round(model->num_parameters * sizeof(floatX) / (1024 * 1024)));
     assert(model->grads_memory == nullptr);
     model->grads_memory = malloc_and_point_parameters(&model->grads, model->param_elements, model->param_sizeof);
@@ -487,7 +487,7 @@ void gpt2_allocate_state(GPT2 *model, int B, int T) {
     printf0(" -> estimated maximum batch size: %zu\n", B + free / bytes_per_sequence);
 }
 
-void gpt2_write_to_checkpoint(GPT2 *model, const char* checkpoint_path) {
+void llama3_write_to_checkpoint(LLama3 *model, const char* checkpoint_path) {
     // write the model to a checkpoint file
     printf0("Writing model to %s\n", checkpoint_path);
     FILE *model_file = fopenCheck(checkpoint_path, "wb");
@@ -511,7 +511,7 @@ void gpt2_write_to_checkpoint(GPT2 *model, const char* checkpoint_path) {
     fcloseCheck(model_file);
 }
 
-void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path, bool weight_init=true) {
+void llama3_build_from_checkpoint(LLama3 *model, const char* checkpoint_path, bool weight_init=true) {
     // If weight_init is true, we will load the weights from this checkpoint .bin file
     // We sometimes want this to be false, if we are going to initialize these weights from
     // the master weights that are instead stored in the state .bin file.
@@ -597,7 +597,7 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path, bool w
     // ------------------------------------------------------------------------
 
     // allocate memory for the model parameters
-    gpt2_allocate_weights(model);
+    llama3_allocate_weights(model);
 
     // read in the parameters if weight_init is true
     if (weight_init) {
@@ -612,7 +612,7 @@ void gpt2_build_from_checkpoint(GPT2 *model, const char* checkpoint_path, bool w
 
 // propagate inputs through the network to produce logits.
 // right now, this function is fully synchronous with the host
-void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
+void llama3_forward(LLama3 *model, const int* inputs, size_t B, size_t T) {
     NVTX_RANGE_FN();
     // we must be careful and use size_t instead of int, otherwise
     // we could overflow int. E.g. l * B * NH * T * T overflows int at B 16.
@@ -737,10 +737,10 @@ void gpt2_forward(GPT2 *model, const int* inputs, size_t B, size_t T) {
 // Forwards both the model and the loss and is used for validation splits and evals.
 // In particular it populates cpu_losses with loss at each token.
 // Some of the evals (e.g. HellaSwag) require the per-token losses, which are produced here.
-float gpt2_validate(GPT2 *model, const int* inputs, const int* targets, size_t B, size_t T) {
+float llama3_validate(LLama3 *model, const int* inputs, const int* targets, size_t B, size_t T) {
     assert(targets != NULL);
     // forward the model itself
-    gpt2_forward(model, inputs, B, T);
+    llama3_forward(model, inputs, B, T);
     // convenience shortcuts, size_t instead of int so that pointer arithmetics don't overflow
     const size_t V = model->config.vocab_size;
     const size_t Vp = model->config.padded_vocab_size;
@@ -764,7 +764,7 @@ float gpt2_validate(GPT2 *model, const int* inputs, const int* targets, size_t B
     return mean_loss;
 }
 
-void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int grad_accum_steps, int micro_step) {
+void llama3_backward_and_reduce(LLama3 *model, int* inputs, const int* targets, int grad_accum_steps, int micro_step) {
     if(model->grads_memory == nullptr) {
         fprintf(stderr, "Need to allocate gradients before backward");
         exit(EXIT_FAILURE);
@@ -969,9 +969,9 @@ void gpt2_backward_and_reduce(GPT2 *model, int* inputs, const int* targets, int 
     }
 }
 
-// Gets the offset of a specific tensor for a specific layer in the GPT2 model
+// Gets the offset of a specific tensor for a specific layer in the LLama3 model
 // layer_id is ignored for weights that are not part of a transformer block
-ShardInfo gpt2_get_tensor_at_layer(const GPT2 *model, int layer_id, int param_tensor_id) {
+ShardInfo llama3_get_tensor_at_layer(const LLama3 *model, int layer_id, int param_tensor_id) {
     // first offset our way to the parameter tensor start
     ptrdiff_t offset = 0;
     for (int i = 0; i < param_tensor_id; i++) {
@@ -986,7 +986,7 @@ ShardInfo gpt2_get_tensor_at_layer(const GPT2 *model, int layer_id, int param_te
     return {offset, size};
 }
 
-float gpt2_calculate_grad_norm(GPT2 *model, MultiGpuConfig* multi_gpu_config) {
+float llama3_calculate_grad_norm(LLama3 *model, MultiGpuConfig* multi_gpu_config) {
     NVTX_RANGE_FN();
     floatX* grads_memory = (floatX*)model->grads_memory;
 
@@ -1001,7 +1001,7 @@ float gpt2_calculate_grad_norm(GPT2 *model, MultiGpuConfig* multi_gpu_config) {
         // grads_memory only contains the averaged gradients at the local shards,
         // so we only calculate the grad norm at the grads_memory belonging to the local shards
         for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
-            ShardInfo tensor = gpt2_get_tensor_at_layer(model, 0, i);
+            ShardInfo tensor = llama3_get_tensor_at_layer(model, 0, i);
             ShardInfo shard = multi_gpu_get_shard_offset(tensor.size, multi_gpu_config, 1);
             ptrdiff_t offset = tensor.offset + shard.offset;
             bool is_first_pass = (i == 0);
@@ -1029,7 +1029,7 @@ float gpt2_calculate_grad_norm(GPT2 *model, MultiGpuConfig* multi_gpu_config) {
     return grad_norm_cpu;
 }
 
-void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, float eps, float weight_decay, float grad_scale, int t,
+void llama3_update(LLama3 *model, float learning_rate, float beta1, float beta2, float eps, float weight_decay, float grad_scale, int t,
                  MultiGpuConfig* multi_gpu_config, bool init_from_master_only=false) {
     // update the model parameters using the AdamW optimizer
     // keep in mind that optimizer sharding (ZeRO-1) assigns different parameters to different GPUs
@@ -1065,7 +1065,7 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
             num_layers = 1;
         }
 
-        ShardInfo tensor = gpt2_get_tensor_at_layer(model, 0, i);
+        ShardInfo tensor = llama3_get_tensor_at_layer(model, 0, i);
         ShardInfo shard = multi_gpu_get_shard_offset(tensor.size, multi_gpu_config, 1);
         ptrdiff_t local_offset_full = tensor.offset + shard.offset;
         ptrdiff_t local_offset_partial = tensor.offset / multi_gpu_config->num_processes;
@@ -1120,7 +1120,7 @@ void gpt2_update(GPT2 *model, float learning_rate, float beta1, float beta2, flo
     cudaCheck(cudaDeviceSynchronize());
 }
 
-float gpt2_estimate_mfu(GPT2 *model, int num_tokens, float dt) {
+float llama3_estimate_mfu(LLama3 *model, int num_tokens, float dt) {
     /*
     Estimate model flops utilization (MFU)
     ref: Section 2.1 of https://arxiv.org/pdf/2001.08361
@@ -1149,7 +1149,7 @@ float gpt2_estimate_mfu(GPT2 *model, int num_tokens, float dt) {
     return mfu;
 }
 
-void gpt2_free(GPT2 *model) {
+void llama3_free(LLama3 *model) {
     cudaFreeCheck(&model->params_memory);
     cudaFreeCheck(&model->grads_memory);
     cudaFreeCheck(&model->m_memory);
@@ -1193,7 +1193,7 @@ void common_start(bool override_enable_tf32 = true, bool print_device_info = tru
     #endif
 }
 
-void common_free(GPT2 &model) {
+void common_free(LLama3 &model) {
     cudaCheck(cudaStreamDestroy(main_stream));
     cudaCheck(cudaFree(cublaslt_workspace));
     cublasCheck(cublasLtDestroy(cublaslt_handle));
@@ -1203,7 +1203,7 @@ void common_free(GPT2 &model) {
 }
 
 
-void save_state(const char* filename, int step, GPT2* model, DataLoader* loader) {
+void save_state(const char* filename, int step, LLama3* model, DataLoader* loader) {
     printf("Writing state to %s\n", filename);
     FILE *state_file = fopenCheck(filename, "wb");
     int state_header[256];
@@ -1219,7 +1219,7 @@ void save_state(const char* filename, int step, GPT2* model, DataLoader* loader)
     state_header[10] = step; // step of the optimization
     // model rng state, start at 20 to leave some padding
     *((unsigned long long*)&state_header[20]) = model->rng_state; // random number generator state
-    *((unsigned long long*)&state_header[22]) = model->rng_state_last_update; // last gpt2_update
+    *((unsigned long long*)&state_header[22]) = model->rng_state_last_update; // last llama3_update
     // dataloader state, start at 30 to leave some padding
     *((size_t*)&state_header[30]) = loader->current_shard_idx; // shard of the dataset
     *((size_t*)&state_header[32]) = loader->current_sample_idx; // position in shard
@@ -1244,7 +1244,7 @@ void save_state(const char* filename, int step, GPT2* model, DataLoader* loader)
     fcloseCheck(state_file);
 }
 
-void load_state(int* step, GPT2* model, DataLoader* loader, const char* filename) {
+void load_state(int* step, LLama3* model, DataLoader* loader, const char* filename) {
     FILE *state_file = fopenCheck(filename, "rb");
     int state_header[256];
     freadCheck(state_header, sizeof(int), 256, state_file);
@@ -1256,7 +1256,7 @@ void load_state(int* step, GPT2* model, DataLoader* loader, const char* filename
     int should_shuffle = state_header[5]; // shuffle state of the dataloader
     *step = state_header[10]; // step of the optimization
     model->rng_state = *((unsigned long long*)&state_header[20]); // random number generator state
-    model->rng_state_last_update = *((unsigned long long*)&state_header[22]); // last gpt2_update
+    model->rng_state_last_update = *((unsigned long long*)&state_header[22]); // last llama3_update
     size_t current_shard_idx = *((size_t*)&state_header[30]); // shard index
     size_t current_sample_idx = *((size_t*)&state_header[32]); // position in shard
 
@@ -1280,7 +1280,7 @@ void load_state(int* step, GPT2* model, DataLoader* loader, const char* filename
         file_to_device(model->master_weights, state_file, shard_num_parameters * sizeof(float), IO_BUF_SIZE, main_stream);
         // restore weights from the master weights using the RNG state before last weight update
         model->rng_state = model->rng_state_last_update;
-        gpt2_update(model, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0, &multi_gpu_config, /* init_from_master_only*/ true);
+        llama3_update(model, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0, &multi_gpu_config, /* init_from_master_only*/ true);
         model->rng_state = *((unsigned long long*)&state_header[20]); // use final RNG state from checkpoint after this
     }
 
@@ -1310,14 +1310,14 @@ void load_state(int* step, GPT2* model, DataLoader* loader, const char* filename
     fcloseCheck(state_file);
 }
 
-void write_checkpoint(const char* output_log_dir, int step, GPT2* model, DataLoader* train_loader, MultiGpuConfig* multi_gpu_config) {
+void write_checkpoint(const char* output_log_dir, int step, LLama3* model, DataLoader* train_loader, MultiGpuConfig* multi_gpu_config) {
     // a checkpoint contains: model weights, optimizer/dataloader state, and a DONE file
     printf0("Writing checkpoint at step %d\n", step);
     int rank = multi_gpu_config->process_rank;
     // only rank 0 writes the model file because it is the same across all ranks
     if (rank == 0) {
         snprintf(filename_buffer, sizeof(filename_buffer), "%s/model_%08d.bin", output_log_dir, step);
-        gpt2_write_to_checkpoint(model, filename_buffer);
+        llama3_write_to_checkpoint(model, filename_buffer);
     }
     // all ranks write their state file
     snprintf(filename_buffer, sizeof(filename_buffer), "%s/state_%08d_%05d.bin", output_log_dir, step, rank);
@@ -1417,7 +1417,7 @@ int main(int argc, char *argv[]) {
     // read in the (optional) command line arguments
     const char* train_data_pattern = "dev/data/tinyshakespeare/tiny_shakespeare_train.bin";
     const char* val_data_pattern = "dev/data/tinyshakespeare/tiny_shakespeare_val.bin";
-    const char* load_filename = "llama3.1_8B.bin"; // bf16 weights of the Llama 3.1 8B model
+    const char* load_filename = "llama3.2_1B_bf16.bin"; // bf16 weights of the Llama 3.2 1B model
     const char* lr_scheduler_type = "cosine";
     const char* output_log_dir = NULL;
     int checkpoint_every = 0; // write checkpoints every how many steps?
@@ -1566,16 +1566,16 @@ int main(int argc, char *argv[]) {
     }
 
     // build the GPT-2 model
-    GPT2 model;
-    gpt2_init_common(&model);
+    LLama3 model;
+    llama3_init_common(&model);
     if (resuming == 1) {
         // if `-y 1` was set, then we are resuming from the latest checkpoint
         // if we are using master weights, we'll init them later inside load_state()
         bool weight_init = !use_master_weights;
-        gpt2_build_from_checkpoint(&model, filename_buffer, weight_init);
+        llama3_build_from_checkpoint(&model, filename_buffer, weight_init);
     } else if (ends_with_bin(load_filename)) {
         // otherwise, if this is a .bin file, we assume it's a model, let's init from it
-        gpt2_build_from_checkpoint(&model, load_filename);
+        llama3_build_from_checkpoint(&model, load_filename);
     } else {
         // For Llama 3.1 we currently demand a .bin file to load the model from, and
         // initializing from scratch is currently not supported (but can be added later)
@@ -1644,7 +1644,7 @@ int main(int argc, char *argv[]) {
         printf0("HellaSwag eval not found at %s, skipping its evaluation\n", hellaswag_path);
         printf0("You can run `python dev/data/hellaswag.py` to export and use it with `-h 1`.\n");
     }
-    // more prints related to allocations from gpt2_build_from_checkpoint down here to not mess up our table above
+    // more prints related to allocations from llama3_build_from_checkpoint down here to not mess up our table above
     printf0("num_parameters: %zu => bytes: %zu\n", model.num_parameters, model.num_parameters_bytes);
     printf0("allocated %d MiB for model parameters\n", (int)round(model.num_parameters_bytes / (1024 * 1024)));
     // few more prints for gradient accumulation math up above
@@ -1673,7 +1673,7 @@ int main(int argc, char *argv[]) {
 
     // if we found a checkpoint to resume from, load the optimization state
     int step = 0;
-    gpt2_allocate_state(&model, B, T);
+    llama3_allocate_state(&model, B, T);
     if (resuming == 1) {
         snprintf(filename_buffer, sizeof(filename_buffer), "%s/state_%08d_%05d.bin", output_log_dir, resume_max_step, multi_gpu_config.process_rank);
         load_state(&step, &model, &train_loader, filename_buffer);
@@ -1705,7 +1705,7 @@ int main(int argc, char *argv[]) {
             dataloader_reset(&val_loader);
             for (int i = 0; i < val_num_batches; i++) {
                 dataloader_next_batch(&val_loader);
-                val_loss += gpt2_validate(&model, val_loader.inputs, val_loader.targets, B, T);
+                val_loss += llama3_validate(&model, val_loader.inputs, val_loader.targets, B, T);
             }
             val_loss /= val_num_batches;
             val_loss = multi_gpu_cpu_float_sum(val_loss, &multi_gpu_config) / multi_gpu_config.num_processes;
@@ -1722,7 +1722,7 @@ int main(int argc, char *argv[]) {
             for (int i = 0; i < eval_loader.num_batches; i++) {
                 if (i % 10 == 0) { printf("evaluating HellaSwag: %d/%d\r", i, eval_loader.num_batches); }
                 evalloader_next_batch(&eval_loader);
-                gpt2_validate(&model, eval_loader.inputs, eval_loader.targets, B, T);
+                llama3_validate(&model, eval_loader.inputs, eval_loader.targets, B, T);
                 int correct = evalloader_stat_losses(&eval_loader, model.cpu_losses);
                 eval_acc_norm += (float)correct;
             }
@@ -1753,7 +1753,7 @@ int main(int argc, char *argv[]) {
                 // on cuDNN 9.2.1 with cuDNN FrontEnd 1.5.2, T >= 256 seems bit-for-bit identical
                 // (but even if it wasn't fully identical that's probably not the end of the world)
                 // note this is still somewhat wasteful because we don't have a KV cache!
-                gpt2_forward(&model, gen_tokens, 1, CEIL_DIV(t, min(T,256)) * min(T,256));
+                llama3_forward(&model, gen_tokens, 1, CEIL_DIV(t, min(T,256)) * min(T,256));
                 // get the V-dimensional vector probs[0, t-1, :]
                 floatX* logits = model.acts.output + (t - 1) * model.config.padded_vocab_size;
                 // move probs back to CPU and sample (note we only move the first vocab_size logits, ignoring the padding)
@@ -1815,15 +1815,15 @@ int main(int argc, char *argv[]) {
             // fetch the next data batch
             dataloader_next_batch(&train_loader);
             // forward pass. note that we pass in grad_accum_steps, which scales down the loss
-            gpt2_forward(&model, train_loader.inputs, B, T);
+            llama3_forward(&model, train_loader.inputs, B, T);
             // backward pass. all model params accumulate gradients with += inside this inner loop
-            gpt2_backward_and_reduce(&model, train_loader.inputs, train_loader.targets, grad_accum_steps, micro_step);
+            llama3_backward_and_reduce(&model, train_loader.inputs, train_loader.targets, grad_accum_steps, micro_step);
         }
         float zloss = (float)(update_detector(&loss_outlier_detector, (double)model.mean_loss)); // loss z-score
         // fetch the next learning rate
         float step_learning_rate = get_learning_rate(&lr_scheduler, step);
         // calculate the gradient norm and how much we wish to scale the gradient
-        float grad_norm = gpt2_calculate_grad_norm(&model, &multi_gpu_config);
+        float grad_norm = llama3_calculate_grad_norm(&model, &multi_gpu_config);
         float zgrad = (float)(update_detector(&grad_norm_outlier_detector, (double)grad_norm)); // grad z-score
         // update the model parameters
         if (isfinite(zloss) && skip_update_lossz != 0.0f && zloss > skip_update_lossz) {
@@ -1834,7 +1834,7 @@ int main(int argc, char *argv[]) {
             // clip the gradient norm to a maximum value
             float grad_clip = 1.0f;
             float grad_scale = (grad_norm > grad_clip) ? grad_clip / grad_norm : 1.0f;
-            gpt2_update(&model, step_learning_rate, 0.9f, 0.95f, 1e-8f, weight_decay, grad_scale, step+1, &multi_gpu_config);
+            llama3_update(&model, step_learning_rate, 0.9f, 0.95f, 1e-8f, weight_decay, grad_scale, step+1, &multi_gpu_config);
         }
         cudaCheck(cudaEventRecord(end));
         cudaCheck(cudaEventSynchronize(end)); // wait for the end event to finish to get correct timings
@@ -1853,7 +1853,7 @@ int main(int argc, char *argv[]) {
             ema_tokens_per_second = 0.95f * ema_tokens_per_second + 0.05f * tokens_per_second;
             bias_corrected_ema_tokens_per_second = ema_tokens_per_second / (1.0f - powf(0.95f, step));
         }
-        float mfu = gpt2_estimate_mfu(&model, B * T * grad_accum_steps, time_elapsed_ms / 1000.0f);
+        float mfu = llama3_estimate_mfu(&model, B * T * grad_accum_steps, time_elapsed_ms / 1000.0f);
         printf0("step %4d/%d | loss %7.6f (%+.2fz)| norm %6.4f (%+.2fz)| lr %.2e | %.2f ms | %.1f%% bf16 MFU | %.0f tok/s\n",
                 step + 1, train_num_batches, model.mean_loss, zloss, grad_norm, zgrad, step_learning_rate,
                 time_elapsed_ms, 100*mfu, bias_corrected_ema_tokens_per_second);
@@ -1882,7 +1882,7 @@ int main(int argc, char *argv[]) {
     free(cpu_logits);
     free(gen_tokens);
     multi_gpu_config_free(&multi_gpu_config);
-    gpt2_free(&model);
+    llama3_free(&model);
     common_free(model);
     return 0;
 }
