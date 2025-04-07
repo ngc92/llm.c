@@ -173,7 +173,18 @@ inline void device_to_file(FILE* dest, void* src, size_t num_bytes, size_t buffe
 
 // copy num_bytes from file src into device pointer dest, using double buffering running on the given stream.
 inline void file_to_device(void* dest, FILE* src, size_t num_bytes, size_t buffer_size, cudaStream_t stream) {
-     // allocate pinned buffer for faster, async transfer
+    long start = ftell(src);
+    fseek(src, 0L, SEEK_END);
+    long end = ftell(src);
+    fseek(src, start, SEEK_SET);
+
+    if(end - start < num_bytes) {
+        fprintf(stderr, "Trying to read %'ld bytes from file, but only %'ld bytes left\n",
+                num_bytes, end-start);
+        exit(EXIT_FAILURE);
+    }
+
+    // allocate pinned buffer for faster, async transfer
      // from the docs (https://developer.download.nvidia.com/compute/DevZone/docs/html/C/doc/html/group__CUDART__HIGHLEVEL_ge439496de696b166ba457dab5dd4f356.html)
      // WC memory is a good option for buffers that will be written by the CPU and read by the device via mapped pinned memory or host->device transfers.
     char* buffer_space;

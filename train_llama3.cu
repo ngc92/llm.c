@@ -496,16 +496,26 @@ void llama3_write_to_checkpoint(LLama3 *model, const char* checkpoint_path) {
     // write the header first
     int model_header[256];
     memset(model_header, 0, sizeof(model_header));
-    model_header[0] = 20240326; // magic number
+    model_header[0] = 20240803; // magic number
     assert(PRECISION_MODE == PRECISION_FP32 || PRECISION_MODE == PRECISION_BF16);
     model_header[1] = PRECISION_MODE == PRECISION_FP32 ? 3 : 5; // version
     model_header[2] = model->config.max_seq_len;
     model_header[3] = model->config.vocab_size;
     model_header[4] = model->config.num_layers;
     model_header[5] = model->config.num_heads;
-    model_header[6] = model->config.channels;
-    model_header[7] = model->config.padded_vocab_size;
+    model_header[6] = model->config.num_kv_heads;
+    model_header[7] = model->config.channels;
+    model_header[8] = model->config.multiple_of;
+    model_header[9] = model->config.use_scaled_rope;
+    model_header[10] = model->config.tied_weights;
+    model_header[11] = 3;
+    model_header[12] = model->config.tied_weights ? 2 : 1;
     fwriteCheck(model_header, sizeof(int), 256, model_file);
+    float float_header[256];
+    float_header[0] = model->config.ffn_dim_multiplier;
+    float_header[1] = model->config.norm_eps;
+    float_header[2] = model->config.rope_theta;
+    fwriteCheck(float_header, sizeof(float), 256, model_file);
     // write the parameters
     device_to_file(model_file, model->params_memory, model->num_parameters_bytes,
                    IO_BUF_SIZE, main_stream);
@@ -572,8 +582,9 @@ void llama3_build_from_checkpoint(LLama3 *model, const char* checkpoint_path, bo
     model->config.multiple_of = header_int[8];
     model->config.use_scaled_rope = header_int[9];
     model->config.use_biases = false;
-    int major_version = header_int[10]; // currently unused, e.g. 3
-    int minor_version = header_int[11]; // currently unused, e.g. 1 (so Llama 3.1)
+    model->config.tied_weights = header_int[10];
+    int major_version = header_int[11]; // currently unused, e.g. 3
+    int minor_version = header_int[12]; // 1 or 2
     // now the float section
     model->config.ffn_dim_multiplier = header_float[0];
     model->config.norm_eps = header_float[1];
@@ -613,6 +624,94 @@ void llama3_build_from_checkpoint(LLama3 *model, const char* checkpoint_path, bo
 
     // only return from this function once we are certain the params are ready on the GPU
     cudaCheck(cudaDeviceSynchronize());
+}
+
+void llama3_build_from_descriptor(LLama3 *model, const char* descriptor) {
+    int billion_params = atoi(descriptor);
+    assert(billion_params >= 0); // atoi returns 0 if not a number
+    int layers, channels, num_heads;
+    float multiplier;
+    if      (billion_params == 0)   { layers = 8; channels = 1024; num_heads = 16; multiplier=1.4; }   // custom smaller model
+    else if (billion_params == 1)   { layers = 16; channels = 2048; num_heads = 32; multiplier=1.4; }   // LLama 3.2 1B
+    else if (billion_params == 3)   { layers = 28; channels = 3072; num_heads = 24; multiplier=1.0; }   // LLama 3.2 3B
+    else if (billion_params == 8)   { layers = 32; channels = 4096; num_heads = 32; multiplier=1.3; }   // LLama 3.1 8B
+    else if (billion_params == 70)  { layers = 80; channels = 8192; num_heads = 64; multiplier=1.3; }   // LLama 3.1 70B
+    else if (billion_params == 405) { layers = 126; channels = 16384; num_heads = 128; multiplier=1.2; }   // LLama 3.1 405B
+    else { fprintf(stderr, "Unsupported LLama3 size: %d\n", billion_params); exit(EXIT_FAILURE); }
+
+    LLama3Config* config = &model->config;
+    config->num_layers = layers;
+    config->channels = channels;
+    config->num_heads = num_heads;
+    config->ffn_dim_multiplier = multiplier;
+    config->max_seq_len = 8192;
+    config->vocab_size = 128256;
+    config->padded_vocab_size = 128256;
+    config->num_kv_heads = 8;
+    config->multiple_of = 1024;
+    config->norm_eps = 1e-5;
+    config->rope_theta = 500000.f;
+    config->use_scaled_rope = true;
+    config->use_biases = false;
+    config->tied_weights = billion_params < 8;
+
+    llama3_allocate_weights(model);
+
+    // allocate and random init the memory for all the parameters with GPT-2 schema
+    // weights ~N(0, 0.02), biases 0, c_proj weights ~N(0, 0.02/(2*L)**0.5)
+    // NOTE: assuming all parameters are of the type floatX, could be relaxed later
+    mt19937_state init_rng;
+    manual_seed(&init_rng, 42);
+    floatX* params_memory_cpu = (floatX*)mallocCheck(model->num_parameters_bytes);
+    memset(params_memory_cpu, 0, model->num_parameters_bytes);
+    // fill in all the weights with random values
+    float residual_scale = 1.0f / sqrtf(2.0f * model->config.num_layers);
+    // we have to init all these tensors exactly in the order that PyTorch initializes them
+    // so that we can match them up and get correctness and exactly the same initial conditions
+    size_t L = model->config.num_layers;
+    size_t offset = 0;
+    for (int l = 0; l < L; l++) {
+        offset = 0;
+        for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
+            // the layernorm parameters are all initialized to 1
+            if (l == 0 && (i == 2 || i == 8 || i == 14)) { // only at l = 0 to init these just once
+                for (size_t j = 0; j < model->param_elements[i]; j++) {
+                    params_memory_cpu[offset + j] = 1.0f;
+                }
+            }
+            // weights tensors are handled here
+            if ((l == 0 && (i == 0 || i == 1)) // only at l = 0, init the wte and wpe tensors
+                || i == 4 || i == 6 || i == 10 || i == 12) {
+                size_t n = model->param_elements[i];
+                size_t layer_offset = 0;
+                if (i == 0) {
+                    // for wte tensor (padded vocab) override to init V instead of Vp rows
+                    n = model->config.vocab_size * model->config.channels;
+                }
+                if (i == 4 || i == 6 || i == 10 || i == 12) {
+                    // weight tensors, we are only initializing layer l
+                    assert(n % L == 0);
+                    n = n / L;
+                    layer_offset = l * n;
+                }
+                // in GPT-2, the projections back into the residual stream are additionally
+                // scaled by 1/sqrt(2*L) for training stability
+                float scale = (i == 6 || i == 12) ? 0.02f * residual_scale : 0.02f;
+                // okay let's draw the random numbers and write them
+                float *fp32_buffer = (float*)mallocCheck(n * sizeof(float));
+                normal_(fp32_buffer, n, 0.0f, scale, &init_rng);
+                for (size_t j = 0; j < n; j++) {
+                    params_memory_cpu[offset + layer_offset + j] = (floatX)fp32_buffer[j];
+                }
+                free(fp32_buffer);
+            }
+            offset += model->param_elements[i];
+        }
+    }
+
+    // copy them to GPU
+    cudaCheck(cudaMemcpy(model->params_memory, params_memory_cpu, model->num_parameters_bytes, cudaMemcpyHostToDevice));
+    free(params_memory_cpu);
 }
 
 // propagate inputs through the network to produce logits.
@@ -1594,10 +1693,7 @@ int main(int argc, char *argv[]) {
         // otherwise, if this is a .bin file, we assume it's a model, let's init from it
         llama3_build_from_checkpoint(&model, load_filename);
     } else {
-        // For Llama 3.1 we currently demand a .bin file to load the model from, and
-        // initializing from scratch is currently not supported (but can be added later)
-        printf0("Error: Llama 3 cannot be initialized from scratch right now\n");
-        exit(EXIT_FAILURE);
+        llama3_build_from_descriptor(&model, load_filename);
     }
 
     model.use_master_weights = use_master_weights;

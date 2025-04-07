@@ -956,8 +956,9 @@ def write_model(model, filename, dtype):
     header_int[7] = model.config.n_embd
     header_int[8] = model.config.multiple_of
     header_int[9] = int(model.config.use_scaled_rope)
-    header_int[10] = int(model.config.version.split('.')[0]) # major version
-    header_int[11] = int(model.config.version.split('.')[1]) # minor version
+    header_int[10] = int(model.config.tied_embeddings)
+    header_int[11] = int(model.config.version.split('.')[0]) # major version
+    header_int[12] = int(model.config.version.split('.')[1]) # minor version
     # float section of the header
     header_float = torch.zeros(256, dtype=torch.float32)
     header_float[0] = model.config.ffn_dim_multiplier
