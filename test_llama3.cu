@@ -28,23 +28,23 @@ int check_tensor(float *a, float *b, int n, const char* label, float threshold=1
         }
         if (diff > t_eff) {
             ok = 0;
-            ++nerror;
         }
         // print the first few elements so we can visually assess the "proof" of the comparison
         if (i < print_upto) {
             printf(diff <= t_eff ? "OK " :  "NOT OK ");
             printf("%f %f\n", a[i], b[i]);
         } else if (!ok && nerror <= print_upto) {
+            ++nerror;
             // also print the first few errors, so we can see if there's a pattern
             printf("NOT OK %f %f at %d \n", a[i], b[i], i);
         }
     }
     // print the final result
     if (ok) {
-        printf("TENSOR OK, max diff: %.3e, with rel error: %.3e (calculated=%10f, ref=%10f), %.2f%% of maximum error\n",
+        printf("TENSOR \033[0;32mOK\033[0m, max diff: %.3e, with rel error: %.3e (calculated=%10f, ref=%10f), %.2f%% of maximum error\n",
                 max_diff, max_rel_error, max_a, max_b, max_to_threshold*100);
     } else {
-        printf("TENSOR NOT OK, max diff: %.3e, with rel error: %.3e (calculated=%10f, ref=%10f), %.2f%% of maximum error\n",
+        printf("TENSOR \033[0;31mNOT OK\033[0m, max diff: %.3e, with rel error: %.3e (calculated=%10f, ref=%10f), %.2f%% of maximum error\n",
                 max_diff, max_rel_error, max_a, max_b, max_to_threshold*100);
     }
     return ok;
@@ -81,7 +81,7 @@ float* float_cpu_malloc_and_point_parameters(FloatParameterTensors* params, size
     // everything is float so number of bytes to allocate is a simple multiplication
     float* params_memory = (float*)mallocCheck(num_parameters * sizeof(float));
     float** ptrs[] = {
-        &params->wte, &params->wpe, &params->ln1w, &params->ln1b, &params->qkvw, &params->qkvb,
+        &params->wte, &params->wlmhead, &params->ln1w, &params->ln1b, &params->qkvw, &params->qkvb,
         &params->attprojw, &params->attprojb, &params->ln2w, &params->ln2b, &params->fcw, &params->fcb,
         &params->fcprojw, &params->fcprojb, &params->lnfw, &params->lnfb
     };
@@ -89,6 +89,9 @@ float* float_cpu_malloc_and_point_parameters(FloatParameterTensors* params, size
     for (int i = 0; i < NUM_PARAMETER_TENSORS; i++) {
         *(ptrs[i]) = params_memory_iterator;
         params_memory_iterator += param_sizes[i];
+    }
+    if(param_sizes[1] == 0) {
+        params->wlmhead = nullptr;
     }
     return params_memory;
 }
@@ -313,15 +316,15 @@ int main(int argc, char *argv[]) {
     // expected losses are as follows, from Python
     float expected_losses[10] = {
         4.849688f,
-        3.070303f,
-        1.711614f,
-        1.056311f,
-        0.593335f,
-        0.428291f,
-        0.372275f,
-        0.360507f,
-        0.355562f,
-        0.334824f
+        3.072875f,
+        1.714160f,
+        1.060224f,
+        0.596433f,
+        0.431257f,
+        0.373330f,
+        0.361544f,
+        0.357920f,
+        0.336123f
     };
 
     // compare

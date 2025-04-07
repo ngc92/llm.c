@@ -312,6 +312,9 @@ class LLaMA(nn.Module):
             ln_f = RMSNorm(config.n_embd, config.norm_eps),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        if config.tied_embeddings:
+            self.lm_head.LLMC_SKIP_INIT = 1 # don't init this one, we will tie weights
+            self.transformer.wte.weight = self.lm_head.weight
 
         # init all weights, use a torch rng object to be very careful
         self.init_rng = torch.Generator()
@@ -428,7 +431,6 @@ class LLaMA(nn.Module):
                 checkpoint[new_key] = checkpoint.pop(old_key)
 
         checkpoint['transformer.ln_f.weight'] = checkpoint.pop('model.norm.weight')
-
         return checkpoint
 
     @classmethod
@@ -875,7 +877,7 @@ def write_bf16(tensor, file):
     b = t.numpy().tobytes()
     file.write(b)
 
-def write_tensors(model_tensors, L, file, dtype):
+def write_tensors(model_tensors, L, tied, file, dtype):
     # writes LLaMA 3 model's weights to a binary file
     # things get a bit more complicated though:
     # 1) We want to maintain the ability to finetune just the biases in the C code
@@ -893,7 +895,8 @@ def write_tensors(model_tensors, L, file, dtype):
     assert dtype in {"float32", "bfloat16"}
     write_fun = write_fp32 if dtype == "float32" else write_bf16
     write_fun(model_tensors["transformer.wte.weight"], file) # (V, C)
-    write_fun(model_tensors["lm_head.weight"], file) # (V, C) # <--- hack (3) here!
+    if not tied:
+        write_fun(model_tensors["lm_head.weight"], file) # (V, C) # <--- hack (3) here!
     for i in range(L): # (L, C)
         write_fun(model_tensors[f"transformer.h.{i}.ln_1.weight"], file)
     for i in range(L): # (L, C)
@@ -966,7 +969,7 @@ def write_model(model, filename, dtype):
     with open(filename, "wb") as file:
         file.write(header_int.numpy().tobytes()) # int header
         file.write(header_float.numpy().tobytes()) # float header
-        write_tensors(params, model.config.n_layer, file, dtype) # params
+        write_tensors(params, model.config.n_layer, model.config.tied_embeddings, file, dtype) # params
     print(f"wrote {filename}")
 
 def write_state(model, x, y, logits, loss, filename):
@@ -975,8 +978,9 @@ def write_state(model, x, y, logits, loss, filename):
     # this can be used for checking the computation correctness in C
     header = torch.zeros(256, dtype=torch.int32)
     header[0] = 20240803 # magic
-    header[1] = x.size(0) # batch size of the batch, B
-    header[2] = x.size(1) # temporal extent of the batch, T
+    header[1] = 2 # version
+    header[2] = x.size(0) # batch size of the batch, B
+    header[3] = x.size(1) # temporal extent of the batch, T
     grads = {name: param.grad.cpu() for name, param in model.named_parameters()}
     with open(filename, "wb") as file:
         # header
@@ -990,7 +994,7 @@ def write_state(model, x, y, logits, loss, filename):
         # loss (single float, result of the cross entropy loss)
         write_fp32(loss.cpu(), file)
         # gradients
-        write_tensors(grads, model.config.n_layer, file, "float32")
+        write_tensors(grads, model.config.n_layer, model.config.tied_embeddings, file, "float32")
     print(f"wrote {filename}")
 
 # -----------------------------------------------------------------------------
