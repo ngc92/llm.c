@@ -202,7 +202,7 @@ void* malloc_and_point_parameters(ParameterTensors* params, size_t* param_elemen
         params_memory_iterator += param_elements[i] * param_sizeof[i];
     }
     // tied weights?
-    if(param_sizeof[1] == 0) {
+    if(param_elements[1] == 0) {
         params->wlmhead = nullptr;
     }
     return params_memory;
