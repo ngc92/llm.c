@@ -1772,7 +1772,7 @@ int main(int argc, char *argv[]) {
 
     // set up the Tokenizer
     Tokenizer tokenizer;
-    // tokenizer_init(&tokenizer, "gpt2_tokenizer.bin"); // TODO: port tokenizer later from GPT2 -> Llama 3
+    tokenizer_init(&tokenizer, "llama3_tokenizer.bin");
 
     // set up learning rate scheduler
     LearningRateScheduler lr_scheduler;
@@ -1808,8 +1808,6 @@ int main(int argc, char *argv[]) {
         NvtxRange step_range("Train step", step);
 
         int last_step = step == train_num_batches;
-
-        if(0) { // TODO DELETE; START: IGNORE ALL THIS BLOCK WHILE GETTING STUFF TO WORK
 
         // once in a while estimate the validation loss (all processes collaborate)
         if (step % val_loss_every == 0 || last_step) {
@@ -1847,7 +1845,7 @@ int main(int argc, char *argv[]) {
 
         // once in a while do model inference to print generated text (only rank 0)
         if (multi_gpu_config.process_rank == 0 && sample_every > 0 &&
-           (step > 0 && (step % sample_every) == 0 || last_step)) {
+            (step > 0 && (step % sample_every) == 0 || last_step)) {
             NvtxRange generation_range("generation");
             unsigned long long sample_rng_state = 1337;
             // fill up gen_tokens with the <|endoftext|> token, which kicks off the generation
@@ -1908,7 +1906,6 @@ int main(int argc, char *argv[]) {
             }
         }
         resuming = 0;
-        } // TODO DELETE; END: IGNORE ALL THIS BLOCK WHILE GETTING STUFF TO WORK
 
         // bit confusing: we want to make sure to eval and sample on 0th iteration
         // but also after the very last iteration. so we loop for step <= train_num_batches

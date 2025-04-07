@@ -20,6 +20,7 @@ import argparse
 import os
 import math
 import glob
+import struct
 import inspect
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -998,6 +999,28 @@ def write_state(model, x, y, logits, loss, filename):
         write_tensors(grads, model.config.n_layer, model.config.tied_embeddings, file, "float32")
     print(f"wrote {filename}")
 
+def write_tokenizer(enc, filename):
+    n = len(enc)
+    header = torch.zeros(256, dtype=torch.int32)
+    header[0] = 20240328 # magic
+    header[1] = 2 # tokenizer version = 2 (1 -> 2: includes EOT token)
+    header[2] = len(enc) # number of tokens
+    header[3] = enc.stop_tokens[0] # EOT token
+    with open(filename, "wb") as file:
+        file.write(header.numpy().tobytes())
+        for i in range(n):
+            b = enc.decode([i]).encode('utf-8')
+            length = len(b)
+
+            # terrible hack, but it allows us to stay within 1 byte to represent the token length
+            #if length == 256:
+            #    length = 0
+            assert length < 256, f"Token {i} length exceeds 256: {length}; {b.decode('utf-8')}"
+            file.write(struct.pack("<B", length))  # Write the length as a 1-byte unsigned integer
+            file.write(b)  # Write the actual bytes
+    print(f"wrote {filename}")
+
+
 # -----------------------------------------------------------------------------
 # int main
 
@@ -1153,6 +1176,8 @@ if __name__ == "__main__":
 
     # -------------------------------------------------------------------------
     # PyTorch -> C bridge: save some weights and state for C to load later as reference
+    if master_process and args.write_tensors: # tokenizer is technically not tensors but ok
+        write_tokenizer(model.tokenizer, "llama3_tokenizer.bin")
 
     # do one forward pass to generate ground truth for our C tests
     if master_process and args.write_tensors and (not args.inference_only):
