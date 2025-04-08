@@ -798,8 +798,13 @@ void llama3_forward(LLama3 *model, const int* inputs, size_t B, size_t T) {
         // Attention block
         // The input l_ln1 now holds the (already layernormed) input
         #ifdef ENABLE_CUDNN
-            printf("cuDNN path TODO\n"); exit(0);
-            matmul_forward_cublaslt(l_qkvr, l_ln1, l_qkvw, l_qkvb, B, T, C, qkv_channels, main_stream);
+            // 1) projection to QKV vectors (note k,v may be fewer heads than q)
+            matmul_forward_cublaslt(scratch, l_ln1, l_qkvw, l_qkvb, B, T, C, qkv_channels, main_stream);
+             // 2) apply RoPE to q,k in place
+            rope_forward(scratch, scratch, model->freqs_cis, B, T, n_head, n_kv_head, n_kv_head, hd, main_stream);
+            // 3) replicate k,v so that all of q,k,v have the same number of heads. done for simplicity, for now
+            repkv_forward(l_qkvr, scratch, B, T, n_head, n_kv_head, hd, main_stream);
+            // 4) attention: att <- softmax(qk^T)v
             float* l_att = (float*)acts.att + l * B * NH * T; // cuDNN needs a smaller FP32 tensor
             attention_forward_cudnn(l_atty, (float*)l_att, l_qkvr, B, T, NH, C, main_stream);
         #else
@@ -1009,9 +1014,8 @@ void llama3_backward_and_reduce(LLama3 *model, int* inputs, const int* targets, 
         // <--- gradient here matches OK
 
         #ifdef ENABLE_CUDNN
-        printf("cuDNN path TODO\n"); exit(0);
         float* l_att = (float*)acts.att + l * B * NH * T; // cuDNN needs a smaller FP32 tensor
-        attention_backward_cudnn(dl_bt4c, dl_btc, l_qkvr, l_atty, (float*)l_att, B, T, NH, C, main_stream);
+        attention_backward_cudnn(dl_bt4c, dl_btc, l_qkvr, l_atty, l_att, B, T, NH, C, main_stream);
         #else
         floatX* l_att = acts.att + l * B * NH * T * T;
         // we need B x T x (4)C buffers. l_atty and l_fch aren't needed anymore at this point, so reuse their memory
