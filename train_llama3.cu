@@ -590,28 +590,6 @@ void llama3_build_from_checkpoint(LLama3 *model, const char* checkpoint_path, bo
     model->config.norm_eps = header_float[1];
     model->config.rope_theta = header_float[2];
 
-    // ------------------------------------------------------------------------
-    // TODO TAKE OUT ----------------------------------------------------------
-    // Debugging: print all of the values above to check visually and EXIT
-    printf("CHECK:\n");
-    printf("max_seq_len: %d\n", model->config.max_seq_len);
-    printf("vocab_size: %d\n", model->config.vocab_size);
-    printf("padded_vocab_size: %d\n", model->config.padded_vocab_size);
-    printf("num_layers: %d\n", model->config.num_layers);
-    printf("num_heads: %d\n", model->config.num_heads);
-    printf("num_kv_heads: %d\n", model->config.num_kv_heads);
-    printf("channels: %d\n", model->config.channels);
-    printf("multiple_of: %d\n", model->config.multiple_of);
-    printf("use_scaled_rope: %d\n", model->config.use_scaled_rope);
-    printf("major version: %d\n", major_version);
-    printf("minor version: %d\n", minor_version);
-    printf("use_biases: %d\n", model->config.use_biases);
-    printf("ffn_dim_multiplier: %f\n", model->config.ffn_dim_multiplier);
-    printf("norm_eps: %f\n", model->config.norm_eps);
-    printf("rope_theta: %f\n", model->config.rope_theta);
-    printf("tied_weights: %d\n", model->config.tied_weights);
-    // ------------------------------------------------------------------------
-
     // allocate memory for the model parameters
     llama3_allocate_weights(model);
 
@@ -627,17 +605,18 @@ void llama3_build_from_checkpoint(LLama3 *model, const char* checkpoint_path, bo
 }
 
 void llama3_build_from_descriptor(LLama3 *model, const char* descriptor) {
-    int billion_params = atoi(descriptor);
-    assert(billion_params >= 0); // atoi returns 0 if not a number
-    int layers, channels, num_heads;
+    int layers = atoi(descriptor);
+    assert(layers > 0); // atoi returns 0 if not a number
+    int channels, num_heads;
     float multiplier;
-    if      (billion_params == 0)   { layers = 8; channels = 1024; num_heads = 16; multiplier=1.4; }   // custom smaller model
-    else if (billion_params == 1)   { layers = 16; channels = 2048; num_heads = 32; multiplier=1.4; }   // LLama 3.2 1B
-    else if (billion_params == 3)   { layers = 28; channels = 3072; num_heads = 24; multiplier=1.0; }   // LLama 3.2 3B
-    else if (billion_params == 8)   { layers = 32; channels = 4096; num_heads = 32; multiplier=1.3; }   // LLama 3.1 8B
-    else if (billion_params == 70)  { layers = 80; channels = 8192; num_heads = 64; multiplier=1.3; }   // LLama 3.1 70B
-    else if (billion_params == 405) { layers = 126; channels = 16384; num_heads = 128; multiplier=1.2; }   // LLama 3.1 405B
-    else { fprintf(stderr, "Unsupported LLama3 size: %d\n", billion_params); exit(EXIT_FAILURE); }
+    if      (layers == 6)   { channels = 768; num_heads = 16; multiplier=1.4; }   // custom
+    else if (layers == 8)   { channels = 1024; num_heads = 16; multiplier=1.4; }   // custom 260M
+    else if (layers == 16)   { channels = 2048; num_heads = 32; multiplier=1.4; }   // LLama 3.2 1B
+    else if (layers == 28)   { channels = 3072; num_heads = 24; multiplier=1.0; }   // LLama 3.2 3B
+    else if (layers == 32)   { channels = 4096; num_heads = 32; multiplier=1.3; }   // LLama 3.1 8B
+    else if (layers == 80)  { channels = 8192; num_heads = 64; multiplier=1.3; }   // LLama 3.1 70B
+    else if (layers == 126) { channels = 16384; num_heads = 128; multiplier=1.2; }   // LLama 3.1 405B
+    else { fprintf(stderr, "Unsupported LLama3 depth: %d\n", layers); exit(EXIT_FAILURE); }
 
     LLama3Config* config = &model->config;
     config->num_layers = layers;
@@ -653,7 +632,7 @@ void llama3_build_from_descriptor(LLama3 *model, const char* descriptor) {
     config->rope_theta = 500000.f;
     config->use_scaled_rope = true;
     config->use_biases = false;
-    config->tied_weights = billion_params < 8;
+    config->tied_weights = layers < 32;
 
     llama3_allocate_weights(model);
 
@@ -761,7 +740,7 @@ void llama3_forward(LLama3 *model, const int* inputs, size_t B, size_t T) {
     ParameterTensors params = model->params; // for brevity
     ActivationTensors acts = model->acts;
     encoder_forward(acts.encoded, model->inputs, params.wte, NULL, B, T, C, main_stream); // encoding goes into residual[0]
-    // first layernorm isn't fused
+    // first rmsnorm isn't fused
     rmsnorm_forward((model->recompute < 2) ? acts.ln1 : acts.lnf, acts.ln1_rstd, acts.encoded, params.ln1w, B, T, C, main_stream);
 
     for (int l = 0; l < L; l++) {
@@ -790,7 +769,7 @@ void llama3_forward(LLama3 *model, const int* inputs, size_t B, size_t T) {
         floatX* l_fch = acts.fch + l * B * T * ffn_channels;
         // reuse the same activation buffer at each layer, as we'll re-compute the gelu during backward
         // very useful because we dramatically reduce VRAM usage, and may be able to fit larger batch size
-        floatX* l_fch_gelu = (model->recompute < 1) ? acts.fch_gelu + l * B * T * ffn_channels_post_gelu : acts.fch_gelu;
+        floatX* l_fch_swiglu = (model->recompute < 1) ? acts.fch_gelu + l * B * T * ffn_channels_post_gelu : acts.fch_gelu;
         floatX* l_residual3 = acts.residual3 + l * B * T * C;
         floatX* scratch = (floatX*)acts.output; // used for non-cudnn attention, fcproj, attproj, etc.
 
@@ -818,12 +797,11 @@ void llama3_forward(LLama3 *model, const int* inputs, size_t B, size_t T) {
             // 4) attention: att <- softmax(qk^T)v
             attention_forward(l_atty, l_qkvr, l_att, qkv_rep_scratch, B, T, C, NH, main_stream);
         #endif
-
         matmul_forward_cublaslt(scratch, l_atty, l_attprojw, l_attprojb, B, T, C, C, main_stream);
         fused_residual_rmsnorm_forward5(l_residual2, l_ln2, l_ln2_rstd, residual, scratch, l_ln2w, B*T, C, main_stream);
         matmul_forward_cublaslt(l_fch, l_ln2, l_fcw, l_fcb, B, T, C, ffn_channels, main_stream);
-        swiglu_forward(l_fch_gelu, l_fch, B, T, ffn_channels_post_gelu, main_stream);
-        matmul_forward_cublaslt(scratch, l_fch_gelu, l_fcprojw, l_fcprojb, B, T, ffn_channels_post_gelu, C, main_stream);
+        swiglu_forward(l_fch_swiglu, l_fch, B, T, ffn_channels_post_gelu, main_stream);
+        matmul_forward_cublaslt(scratch, l_fch_swiglu, l_fcprojw, l_fcprojb, B, T, ffn_channels_post_gelu, C, main_stream);
 
         // OK, fusion across blocks.
         if(l+1 != L) {
@@ -980,7 +958,7 @@ void llama3_backward_and_reduce(LLama3 *model, int* inputs, const int* targets, 
         floatX* l_ln2 = (model->recompute < 2) ? acts.ln2 + l * B * T * C : acts.lnf;
         float* l_ln2_rstd = acts.ln2_rstd + l * B * T;
         floatX* l_fch_pre_gelu = acts.fch + l * B * T * ffn_channels;
-        floatX* l_fch_gelu = (model->recompute < 1) ? acts.fch_gelu + l * B * T * ffn_channels_post_gelu : acts.fch_gelu;
+        floatX* l_fch_swiglu = (model->recompute < 1) ? acts.fch_gelu + l * B * T * ffn_channels_post_gelu : acts.fch_gelu;
         // get the pointers of the gradients of the activations for this layer
         // notice that there is no l *, because we just have a single copy, and keep
         // re-using this memory in every Transformer block as we calculate backward pass
@@ -991,12 +969,11 @@ void llama3_backward_and_reduce(LLama3 *model, int* inputs, const int* targets, 
         // start the backward pass for this layer
         if(model->recompute >= 1) {
             // recompute >= 1 means we recompute gelu. in this case,
-            // l_fch_gelu is just a buffer, so re-compute the gelu from l_fch here
-            // gelu_forward(l_fch_gelu, l_fch_pre_gelu, B*T*4*C, main_stream);
-            swiglu_forward(l_fch_gelu, l_fch_pre_gelu, B, T, ffn_channels_post_gelu, main_stream);
+            // l_fch_swiglu is just a buffer, so re-compute the gelu from l_fch here
+            swiglu_forward(l_fch_swiglu, l_fch_pre_gelu, B, T, ffn_channels_post_gelu, main_stream);
         }
         // backward the 2nd matmul of MLP
-        matmul_backward(dl_bt4c, dl_fcprojw, dl_fcprojb, dresidual, l_fch_gelu, l_fcprojw, scratchF, B, T, ffn_channels_post_gelu, C, main_stream);
+        matmul_backward(dl_bt4c, dl_fcprojw, nullptr, dresidual, l_fch_swiglu, l_fcprojw, nullptr, B, T, ffn_channels_post_gelu, C, main_stream);
         // backward the swiglu here, use scratchX to hold the grad because SwiGLU can't be inplace
         swiglu_backward(dl_bt4c2, dl_bt4c, l_fch_pre_gelu, B, T, ffn_channels_post_gelu, main_stream);
         // backward the 1st matmul of MLP
@@ -1008,8 +985,6 @@ void llama3_backward_and_reduce(LLama3 *model, int* inputs, const int* targets, 
         // rmsnorm backward does += to the dresidual, so it correctly accumulates grad from the MLP block above
         rmsnorm_backward(dresidual, dl_ln2w, scratchF, dl_btc, l_residual2, l_ln2w, l_ln2_rstd, B, T, C, main_stream);
         matmul_backward(dl_btc, dl_attprojw, dl_attprojb, dresidual, l_atty, l_attprojw, scratchF, B, T, C, C, main_stream);
-
-        // <--- gradient here matches OK
 
         #ifdef ENABLE_CUDNN
         float* l_att = (float*)acts.att + l * B * NH * T; // cuDNN needs a smaller FP32 tensor
@@ -1483,7 +1458,7 @@ void error_usage() {
     // file system input / output
     fprintf(stderr, "  -i <string> train data filename pattern (default = dev/data/tinyshakespeare/tiny_shakespeare_train.bin)\n");
     fprintf(stderr, "  -j <string> val data filename pattern (default = dev/data/tinyshakespeare/tiny_shakespeare_val.bin)\n");
-    fprintf(stderr, "  -e <string> input .bin filename or descriptor, see code comments as docs. (default = gpt2_124M_bf16.bin)\n");
+    fprintf(stderr, "  -e <string> input .bin filename or descriptor, see code comments as docs. (default = llama3_124M_bf16.bin)\n");
     fprintf(stderr, "  -o <string> output log dir (default = NULL, no logging)\n");
     fprintf(stderr, "  -lg <int>   log gpu info every x steps (default = -1; disabled)\n");
     fprintf(stderr, "  -n <int>    write optimization checkpoints every how many steps? (default 0, don't)\n");
@@ -1518,7 +1493,7 @@ void error_usage() {
     fprintf(stderr, "  -ge <int>   gelu fusion: 0=none, 1=forward, 2=forward+backward (default: 2 for >=SM90, 0 for older GPUs)\n");
     // memory management
     fprintf(stderr, "  -z <int>    zero_stage, Zero Optimization Stage, 0,1,2,3 (default = 0)\n");
-    fprintf(stderr, "  -r <int>    recompute: less memory but less speed. (default = 1), 0|1|2 = none,gelu,gelu+ln\n");
+    fprintf(stderr, "  -r <int>    recompute: less memory but less speed. (default = 1), 0|1|2 = none,swiglu,swiglu+ln\n");
     // multi-node settings
     fprintf(stderr, "  -pn <int>    num_processes (default = 1)\n");
     fprintf(stderr, "  -pr <int>    process_rank (default = 0)\n");
@@ -1556,8 +1531,8 @@ int main(int argc, char *argv[]) {
     int val_max_steps = 20; // how many batches max do we eval for validation loss?
     int sample_every = 20; // every how many steps to do inference?
     int genT = 64; // number of steps of inference we will do
-    int overfit_single_batch = 1; // useful for debugging, 1 = only load a single data batch once
-    int max_steps = 10;
+    int overfit_single_batch = 0; // useful for debugging, 1 = only load a single data batch once
+    int max_steps = -1;
     int override_enable_tf32 = 1;
     int use_master_weights = 1;
     int gelu_fusion = -1; // 0 = none, 1 = forward, 2 = forward+backward (-1 => per-GPU default)
