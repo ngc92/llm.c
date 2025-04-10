@@ -897,11 +897,14 @@ void llama3_backward_and_reduce(LLama3 *model, int* inputs, const int* targets, 
     ActivationTensors acts = model->acts;
 
     // accumulate the losses inside acts.losses, and kick off the backward pass inside the fused classifier
-    NvtxRange classifier_and_loss_range("classifier_and_loss");
-    const float dloss = 1.0f / (float)(B * T * grad_accum_steps); // results in the uniform average loss over all elements
-    cudaCheck(cudaMemcpy(model->targets, targets, B * T * sizeof(int), cudaMemcpyHostToDevice));
-    tokenCheck(targets, B*T, V);
-    fused_classifier(acts.output, acts.losses, dloss, model->targets, B, T, V, Vp, True, main_stream);
+    {
+        NvtxRange classifier_and_loss_range("classifier_and_loss");
+        const float dloss =
+                1.0f / (float) (B * T * grad_accum_steps); // results in the uniform average loss over all elements
+        cudaCheck(cudaMemcpy(model->targets, targets, B * T * sizeof(int), cudaMemcpyHostToDevice));
+        tokenCheck(targets, B * T, V);
+        fused_classifier(acts.output, acts.losses, dloss, model->targets, B, T, V, Vp, True, main_stream);
+    }
     // ------------------------------------------------------------------------
     // backward pass: go in the reverse order of the forward pass, and call backward() functions
 
