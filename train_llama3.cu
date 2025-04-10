@@ -609,13 +609,19 @@ void llama3_build_from_descriptor(LLama3 *model, const char* descriptor) {
     assert(layers > 0); // atoi returns 0 if not a number
     int channels, num_heads;
     float multiplier;
-    if      (layers == 6)   { channels = 768; num_heads = 16; multiplier=1.4; }   // custom
-    else if (layers == 8)   { channels = 1024; num_heads = 16; multiplier=1.4; }   // custom 260M
-    else if (layers == 16)   { channels = 2048; num_heads = 32; multiplier=1.4; }   // LLama 3.2 1B
-    else if (layers == 28)   { channels = 3072; num_heads = 24; multiplier=1.0; }   // LLama 3.2 3B
-    else if (layers == 32)   { channels = 4096; num_heads = 32; multiplier=1.3; }   // LLama 3.1 8B
+    // the custom sizes are chosen to approximately match the *non-embedding* parameters
+    // of the gpt2 series; hence we get somewhat awkward head sizes
+    // 124M => 85M   vs  190M => 88M
+    // 350M => 300M  vs  500M => 300M
+    // 760M => 680M  vs  850M => 630M
+    if      (layers == 10)  { channels = 768; num_heads = 16; multiplier=1.2; }    // custom 190M
+    else if (layers == 12)  { channels = 1536; num_heads = 24; multiplier=1.0; }   // custom 500M
+    else if (layers == 14)  { channels = 1728; num_heads = 24; multiplier=1.4; }   // custom 850M
+    else if (layers == 16)  { channels = 2048; num_heads = 32; multiplier=1.4; }   // LLama 3.2 1B
+    else if (layers == 28)  { channels = 3072; num_heads = 24; multiplier=1.0; }   // LLama 3.2 3B
+    else if (layers == 32)  { channels = 4096; num_heads = 32; multiplier=1.3; }   // LLama 3.1 8B
     else if (layers == 80)  { channels = 8192; num_heads = 64; multiplier=1.3; }   // LLama 3.1 70B
-    else if (layers == 126) { channels = 16384; num_heads = 128; multiplier=1.2; }   // LLama 3.1 405B
+    else if (layers == 126) { channels = 16384; num_heads = 128; multiplier=1.2; } // LLama 3.1 405B
     else { fprintf(stderr, "Unsupported LLama3 depth: %d\n", layers); exit(EXIT_FAILURE); }
 
     LLama3Config* config = &model->config;
