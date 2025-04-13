@@ -787,6 +787,9 @@ def _peek_data_shard(filename):
         header = np.frombuffer(f.read(256*4), dtype=np.int32)
     if header[0] != 20240801:
         print("ERROR: magic number mismatch in the data .bin file!")
+        if header[0] == 20240520:
+            print(" This looks like a gpt-2-based file.")
+            print(" Make sure to run data generator with --model_desc llama-3")
         exit(1)
     assert header[1] == 7, "unsupported version"
     ntok = header[2] # number of tokens (claimed)

@@ -1612,7 +1612,7 @@ int main(int argc, char *argv[]) {
     // calculate sensible default for total batch size as assuming no gradient accumulation
     if (total_batch_size == -1) { total_batch_size = tokens_per_fwdbwd; }
     // in the future, we might want to set gelu fusion to 2 for SM90+ and 0 for other GPUs
-    if (gelu_fusion == -1) { gelu_fusion = 0; } // (deviceProp.major >= 9) ? 2 : 0; } // in gpt2_init_common for test_gpt2cu...
+    if (gelu_fusion == -1) { gelu_fusion = 0; } // (deviceProp.major >= 9) ? 2 : 0; } // in llama3_init_common for test_llama3cu...
     // calculate the number of gradient accumulation steps from the desired total batch size
     assert(total_batch_size % tokens_per_fwdbwd == 0);
     int grad_accum_steps = total_batch_size / tokens_per_fwdbwd;
