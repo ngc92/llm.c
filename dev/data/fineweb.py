@@ -21,6 +21,7 @@ python dev/data/fineweb.py -t edu -v 100B
 """
 import os
 import argparse
+import functools
 import multiprocessing as mp
 
 import numpy as np
@@ -64,9 +65,8 @@ elif args.type =="edu":
     fw = load_dataset("HuggingFaceFW/fineweb-edu", name=remote_name, split="train")
     name = "edu_fineweb"
 
-def tokenize_llama(doc):
-    # tokenizes a single document and returns a numpy array of uint32 tokens
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3.1-8B")
+
+def tokenize_llama(doc, tokenizer):
     encode = lambda s: tokenizer.encode(s, add_special_tokens=False, verbose=False, split_special_tokens=True)
     eot = tokenizer.encode('')[0] # by default the tokenizer adds the EOT token (128000)
     tokens = [eot] # the special <|endoftext|> token delimits all documents
@@ -75,6 +75,7 @@ def tokenize_llama(doc):
     assert (0 <= tokens_np).all() and (tokens_np < 2**32).all(), "token dictionary too large for uint32"
     tokens_np_uint = tokens_np.astype(np.uint32)
     return tokens_np_uint
+
 
 def tokenize_gpt2(doc):
     # tokenizes a single document and returns a numpy array of uint16 tokens
@@ -106,11 +107,12 @@ with mp.Pool(nprocs) as pool:
     if args.model_desc == "gpt-2":
         tokenize = tokenize_gpt2
     elif args.model_desc == "llama-3":
-        tokenize = tokenize_llama
+        tokenizer = AutoTokenizer.from_pretrained("meta-llama/Meta-Llama-3.1-8B")
+        tokenize = functools.partial(tokenize_llama, tokenizer=tokenizer)
     else:
         raise ValueError(f"unknown model {args.model_desc}")
 
-    for tokens in pool.imap(tokenize, fw, chunksize=16):
+    for tokens in pool.imap(tokenize, fw, chunksize=4096):
 
         # is there enough space in the current shard for the new tokens?
         if token_count + len(tokens) < args.shard_size:
