@@ -26,7 +26,7 @@ void logger_init(Logger *logger, const char *log_dir, int process_rank, int resu
         if (resume == 0) {
             // wipe any existing logfile clean if we're starting fresh
             FILE *logfile = fopenCheck(logger->output_log_file, "w");
-            fclose(logfile);
+            fcloseCheck(logfile);
         }
     }
 }
@@ -35,7 +35,7 @@ void logger_log_eval(Logger *logger, int step, float val) {
     if (logger->active == 1) {
         FILE *logfile = fopenCheck(logger->output_log_file, "a");
         fprintf(logfile, "s:%d eval:%.4f\n", step, val);
-        fclose(logfile);
+        fcloseCheck(logfile);
     }
 }
 
@@ -43,7 +43,7 @@ void logger_log_val(Logger *logger, int step, float val_loss) {
     if (logger->active == 1) {
         FILE *logfile = fopenCheck(logger->output_log_file, "a");
         fprintf(logfile, "s:%d tel:%.4f\n", step, val_loss);
-        fclose(logfile);
+        fcloseCheck(logfile);
     }
 }
 
@@ -51,7 +51,7 @@ void logger_log_train(Logger *logger, int step, float train_loss, float learning
     if (logger->active == 1) {
         FILE *logfile = fopenCheck(logger->output_log_file, "a");
         fprintf(logfile, "s:%d trl:%.4f lr:%.6f norm:%.2f\n", step, train_loss, learning_rate, grad_norm);
-        fclose(logfile);
+        fcloseCheck(logfile);
     }
 }
 
